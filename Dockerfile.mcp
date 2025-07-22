@@ -1,0 +1,113 @@
+# MCP Server Dockerfile for ECS Fargate
+FROM python:3.11-slim
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy MCP server code
+COPY src/mcp_client/ ./mcp_client/
+COPY src/utils/ ./utils/
+
+# Create a simple MCP server script
+RUN echo '#!/usr/bin/env python3\n\
+import asyncio\n\
+import json\n\
+import os\n\
+from http.server import HTTPServer, BaseHTTPRequestHandler\n\
+from urllib.parse import urlparse, parse_qs\n\
+\n\
+class MCPHandler(BaseHTTPRequestHandler):\n\
+    def do_GET(self):\n\
+        if self.path == "/health":\n\
+            self.send_response(200)\n\
+            self.send_header("Content-type", "application/json")\n\
+            self.end_headers()\n\
+            self.wfile.write(json.dumps({"status": "healthy", "type": "mcp_server"}).encode())\n\
+        else:\n\
+            self.send_response(404)\n\
+            self.end_headers()\n\
+    \n\
+    def do_POST(self):\n\
+        if self.path == "/mcp":\n\
+            content_length = int(self.headers["Content-Length"])\n\
+            post_data = self.rfile.read(content_length)\n\
+            \n\
+            try:\n\
+                request = json.loads(post_data.decode("utf-8"))\n\
+                \n\
+                # Mock MCP responses based on request type\n\
+                if request.get("method") == "entities":\n\
+                    response = {\n\
+                        "entities": [\n\
+                            {"id": "service:test-app", "name": "test-app", "type": "SERVICE"}\n\
+                        ]\n\
+                    }\n\
+                elif request.get("method") == "metrics":\n\
+                    response = {\n\
+                        "metrics": {\n\
+                            "cpu_usage": 65.5,\n\
+                            "memory_usage": 58.2,\n\
+                            "request_rate": 1200\n\
+                        }\n\
+                    }\n\
+                else:\n\
+                    response = {"data": "mock_response"}\n\
+                \n\
+                self.send_response(200)\n\
+                self.send_header("Content-type", "application/json")\n\
+                self.end_headers()\n\
+                self.wfile.write(json.dumps(response).encode())\n\
+                \n\
+            except Exception as e:\n\
+                self.send_response(500)\n\
+                self.send_header("Content-type", "application/json")\n\
+                self.end_headers()\n\
+                self.wfile.write(json.dumps({"error": str(e)}).encode())\n\
+        else:\n\
+            self.send_response(404)\n\
+            self.end_headers()\n\
+    \n\
+    def log_message(self, format, *args):\n\
+        # Suppress access logs\n\
+        pass\n\
+\n\
+def run_server():\n\
+    server_type = os.getenv("MCP_SERVER_TYPE", "mock")\n\
+    port = int(os.getenv("MCP_PORT", "3000"))\n\
+    \n\
+    print(f"Starting MCP server (type: {server_type}) on port {port}")\n\
+    \n\
+    server = HTTPServer(("0.0.0.0", port), MCPHandler)\n\
+    try:\n\
+        server.serve_forever()\n\
+    except KeyboardInterrupt:\n\
+        print("Shutting down MCP server...")\n\
+        server.shutdown()\n\
+\n\
+if __name__ == "__main__":\n\
+    run_server()\n\
+' > mcp_server.py
+
+# Make the script executable
+RUN chmod +x mcp_server.py
+
+# Expose the MCP server port
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:3000/health || exit 1
+
+# Default command
+CMD ["python", "mcp_server.py"] 

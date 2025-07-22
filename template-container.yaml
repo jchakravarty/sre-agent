@@ -1,0 +1,146 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SRE Orchestration Agent - Container Image Deployment
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 1024  # Increased for container image
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        APP_ENV: prod
+        PYTHONPATH: /var/task
+
+Parameters:
+  AppConfigApplicationId:
+    Type: String
+    Description: The ID of the AWS AppConfig Application.
+  AppConfigEnvironmentId:
+    Type: String
+    Description: The ID of the AWS AppConfig Environment.
+  AppConfigConfigurationProfileId:
+    Type: String
+    Description: The ID of the AWS AppConfig Configuration Profile.
+  ImageUri:
+    Type: String
+    Description: ECR image URI for the SRE Agent container
+    Default: ""
+
+Resources:
+  # --- ECR Repository ---
+  SREAgentRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: sre-agent
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "any",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+
+  # --- IAM Role for Lambda ---
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: AppConfigAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: 
+                  - appconfig:GetLatestConfiguration
+                  - appconfig:StartConfigurationSession
+                  - appconfig:GetConfiguration
+                Resource: !Sub "arn:aws:appconfig:${AWS::Region}:${AWS::AccountId}:application/${AppConfigApplicationId}/environment/${AppConfigEnvironmentId}/configurationprofile/${AppConfigConfigurationProfileId}"
+        - PolicyName: CloudWatchMetrics
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricData
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+
+  # --- Unified SRE Agent Function (Container Image) ---
+  SREAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sre-agent-unified
+      PackageType: Image
+      ImageUri: !If 
+        - HasImageUri
+        - !Ref ImageUri
+        - !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/sre-agent:latest"
+      Role: !GetAtt LambdaExecutionRole.Arn
+      ReservedConcurrencyLimit: 100  # Limit concurrent executions
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            RestApiId: !Ref SREAgentApi
+            Path: /{proxy+}
+            Method: ANY
+
+  # --- API Gateway ---
+  SREAgentApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: sre-agent-api
+      StageName: prod
+      Cors:
+        AllowMethods: "'POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+      GatewayResponses:
+        DEFAULT_4XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+        DEFAULT_5XX:
+          ResponseParameters:
+            Headers:
+              Access-Control-Allow-Origin: "'*'"
+
+Conditions:
+  HasImageUri: !Not [!Equals [!Ref ImageUri, ""]]
+
+Outputs:
+  SREAgentApiUrl:
+    Description: "API Gateway endpoint URL for SRE Agent"
+    Value: !Sub "https://${SREAgentApi}.execute-api.${AWS::Region}.amazonaws.com/prod"
+  ECRRepositoryUri:
+    Description: "ECR Repository URI"
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/sre-agent"
+  FunctionName:
+    Description: "Lambda Function Name"
+    Value: !Ref SREAgentFunction 

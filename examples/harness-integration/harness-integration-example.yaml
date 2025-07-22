@@ -1,0 +1,338 @@
+# Harness Pipeline Integration Example for SRE Agent
+# This YAML can be imported into your Harness project
+
+pipeline:
+  name: "SRE-Enhanced Deployment Pipeline"
+  identifier: "sre_enhanced_deployment_pipeline"
+  projectIdentifier: "your_project_id"
+  orgIdentifier: "your_org_id"
+  tags: {}
+  stages:
+    - stage:
+        name: "Quality Gate Check"
+        identifier: "quality_gate_check"
+        type: "Http"
+        spec:
+          connectorRef: "your_http_connector"
+          url: "<+pipeline.variables.sre_agent_url>/gate"
+          method: "POST"
+          headers:
+            - key: "Content-Type"
+              value: "application/json"
+            - key: "X-API-Key"
+              value: "<+secrets.getValue('sre_agent_api_key')>"
+          requestBody: |
+            {
+              "application": {
+                "name": "<+pipeline.variables.app_name>",
+                "commit_sha": "<+codebase.commitSha>",
+                "artifact_id": "<+artifact.tag>",
+                "branch": "<+codebase.branch>",
+                "repository": "<+codebase.repoUrl>"
+              },
+              "quality_gates": {
+                "enable_sonarqube": true,
+                "enable_security_scan": true,
+                "enable_performance_test": true
+              }
+            }
+          assertion: <+httpResponseCode> == 200
+          outputVariables:
+            - name: "quality_gate_status"
+              value: <+json.select("status", httpResponseBody)>
+            - name: "quality_gate_details"
+              value: <+json.select("details", httpResponseBody)>
+            - name: "quality_gate_recommendations"
+              value: <+json.select("recommendations", httpResponseBody)>
+        failureStrategies:
+          - onFailure:
+              errors:
+                - "Http"
+              action:
+                type: "Fail"
+    
+    - stage:
+        name: "Deploy to Staging"
+        identifier: "deploy_staging"
+        type: "Deployment"
+        spec:
+          service:
+            serviceRef: "<+pipeline.variables.service_name>"
+            serviceInputs:
+              serviceDefinition:
+                type: "Kubernetes"
+                spec:
+                  artifacts:
+                    primary:
+                      primaryArtifactRef: "<+artifacts.primary>"
+                      sources:
+                        - identifier: "primary"
+                          spec:
+                            connectorRef: "<+pipeline.variables.artifact_connector>"
+                            imagePath: "<+pipeline.variables.image_path>"
+                            tag: "<+pipeline.variables.image_tag>"
+          environment:
+            environmentRef: "staging"
+            deployToAll: false
+            infrastructureDefinitions:
+              - identifier: "staging_k8s"
+                inputs:
+                  identifier: "staging_k8s"
+                  type: "KubernetesDirect"
+                  spec:
+                    connectorRef: "<+pipeline.variables.k8s_connector>"
+                    namespace: "staging"
+                    releaseName: "<+pipeline.variables.app_name>"
+          execution:
+            steps:
+              - step:
+                  name: "Deploy"
+                  identifier: "deploy"
+                  type: "K8sApply"
+                  spec:
+                    skipDryRun: false
+                    skipSteadyStateCheck: false
+            rollbackSteps:
+              - step:
+                  name: "Rollback"
+                  identifier: "rollback"
+                  type: "K8sRollingRollback"
+                  spec:
+                    skipDryRun: false
+        when:
+          stageStatus: "Success"
+    
+    - stage:
+        name: "Get Scaling Recommendations"
+        identifier: "get_scaling_recommendations"
+        type: "Http"
+        spec:
+          connectorRef: "your_http_connector"
+          url: "<+pipeline.variables.sre_agent_url>/suggest"
+          method: "POST"
+          headers:
+            - key: "Content-Type"
+              value: "application/json"
+            - key: "X-API-Key"
+              value: "<+secrets.getValue('sre_agent_api_key')>"
+          requestBody: |
+            {
+              "suggestion_type": "kubernetes_scaling",
+              "application": {
+                "name": "<+pipeline.variables.app_name>",
+                "namespace": "production"
+              },
+              "context": {
+                "environment": "production",
+                "deployment_type": "rolling_update",
+                "current_traffic": "medium"
+              }
+            }
+          assertion: <+httpResponseCode> == 200
+          outputVariables:
+            - name: "hpa_config"
+              value: <+json.select("suggestion.hpa", httpResponseBody)>
+            - name: "resource_config"
+              value: <+json.select("suggestion.resources", httpResponseBody)>
+            - name: "scaling_config"
+              value: <+json.select("suggestion.scaling", httpResponseBody)>
+            - name: "data_availability"
+              value: <+json.select("data_availability", httpResponseBody)>
+            - name: "inferred_context"
+              value: <+json.select("inferred_context", httpResponseBody)>
+            - name: "ai_rationale"
+              value: <+json.select("ai_rationale", httpResponseBody)>
+        when:
+          stageStatus: "Success"
+    
+    - stage:
+        name: "Deploy to Production"
+        identifier: "deploy_production"
+        type: "Deployment"
+        spec:
+          service:
+            serviceRef: "<+pipeline.variables.service_name>"
+            serviceInputs:
+              serviceDefinition:
+                type: "Kubernetes"
+                spec:
+                  artifacts:
+                    primary:
+                      primaryArtifactRef: "<+artifacts.primary>"
+                      sources:
+                        - identifier: "primary"
+                          spec:
+                            connectorRef: "<+pipeline.variables.artifact_connector>"
+                            imagePath: "<+pipeline.variables.image_path>"
+                            tag: "<+pipeline.variables.image_tag>"
+                  manifests:
+                    - manifest:
+                        identifier: "k8s-manifest"
+                        type: "K8sManifest"
+                        spec:
+                          store:
+                            type: "Git"
+                            spec:
+                              connectorRef: "<+pipeline.variables.git_connector>"
+                              gitFetchType: "Branch"
+                              paths:
+                                - "k8s/production/"
+                              branch: "main"
+                        skipVersioning: false
+          environment:
+            environmentRef: "production"
+            deployToAll: false
+            infrastructureDefinitions:
+              - identifier: "production_k8s"
+                inputs:
+                  identifier: "production_k8s"
+                  type: "KubernetesDirect"
+                  spec:
+                    connectorRef: "<+pipeline.variables.k8s_connector>"
+                    namespace: "production"
+                    releaseName: "<+pipeline.variables.app_name>"
+          execution:
+            steps:
+              - step:
+                  name: "Update K8s Manifests"
+                  identifier: "update_k8s_manifests"
+                  type: "K8sApply"
+                  spec:
+                    skipDryRun: false
+                    skipSteadyStateCheck: false
+                    manifestPaths:
+                      - "k8s/production/deployment.yaml"
+                      - "k8s/production/hpa.yaml"
+                      - "k8s/production/service.yaml"
+                    manifestOptions:
+                      - "kustomize"
+                    variables:
+                      - name: "HPA_MIN_REPLICAS"
+                        value: <+pipeline.stages.get_scaling_recommendations.spec.outputVariables.hpa_config.minReplicas>
+                      - name: "HPA_MAX_REPLICAS"
+                        value: <+pipeline.stages.get_scaling_recommendations.spec.outputVariables.hpa_config.maxReplicas>
+                      - name: "HPA_TARGET_CPU"
+                        value: <+pipeline.stages.get_scaling_recommendations.spec.outputVariables.hpa_config.targetCPUUtilizationPercentage>
+                      - name: "CPU_REQUEST"
+                        value: <+pipeline.stages.get_scaling_recommendations.spec.outputVariables.resource_config.cpu_request>
+                      - name: "MEMORY_REQUEST"
+                        value: <+pipeline.stages.get_scaling_recommendations.spec.outputVariables.resource_config.memory_request>
+                      - name: "CPU_LIMIT"
+                        value: <+pipeline.stages.get_scaling_recommendations.spec.outputVariables.resource_config.cpu_limit>
+                      - name: "MEMORY_LIMIT"
+                        value: <+pipeline.stages.get_scaling_recommendations.spec.outputVariables.resource_config.memory_limit>
+            rollbackSteps:
+              - step:
+                  name: "Rollback"
+                  identifier: "rollback"
+                  type: "K8sRollingRollback"
+                  spec:
+                    skipDryRun: false
+        when:
+          stageStatus: "Success"
+    
+    - stage:
+        name: "Post-Deployment Validation"
+        identifier: "post_deployment_validation"
+        type: "Http"
+        spec:
+          connectorRef: "your_http_connector"
+          url: "<+pipeline.variables.sre_agent_url>/validate"
+          method: "POST"
+          headers:
+            - key: "Content-Type"
+              value: "application/json"
+            - key: "X-API-Key"
+              value: "<+secrets.getValue('sre_agent_api_key')>"
+          requestBody: |
+            {
+              "application": {
+                "name": "<+pipeline.variables.app_name>",
+                "namespace": "production"
+              },
+              "validation_type": "post_deployment",
+              "checks": [
+                "health_check",
+                "performance_metrics",
+                "resource_utilization",
+                "security_scan"
+              ]
+            }
+          assertion: <+httpResponseCode> == 200
+          outputVariables:
+            - name: "validation_status"
+              value: <+json.select("status", httpResponseBody)>
+            - name: "validation_details"
+              value: <+json.select("details", httpResponseBody)>
+        when:
+          stageStatus: "Success"
+
+# Pipeline Variables (to be configured in Harness)
+variables:
+  - name: "app_name"
+    type: "String"
+    description: "Application name"
+    required: true
+    default: "user-service"
+  
+  - name: "service_name"
+    type: "String"
+    description: "Harness service name"
+    required: true
+    default: "user-service"
+  
+  - name: "sre_agent_url"
+    type: "String"
+    description: "SRE Agent API Gateway URL"
+    required: true
+    default: "https://your-api-gateway-url.amazonaws.com/prod"
+  
+  - name: "artifact_connector"
+    type: "String"
+    description: "Artifact connector reference"
+    required: true
+    default: "docker-hub"
+  
+  - name: "k8s_connector"
+    type: "String"
+    description: "Kubernetes connector reference"
+    required: true
+    default: "production-k8s"
+  
+  - name: "git_connector"
+    type: "String"
+    description: "Git connector reference"
+    required: true
+    default: "github"
+  
+  - name: "image_path"
+    type: "String"
+    description: "Docker image path"
+    required: true
+    default: "your-org/user-service"
+  
+  - name: "image_tag"
+    type: "String"
+    description: "Docker image tag"
+    required: true
+    default: "<+pipeline.sequenceId>"
+
+# Secrets to be configured in Harness
+# - sre_agent_api_key: API key for SRE Agent authentication
+
+# Connectors to be configured in Harness
+# - your_http_connector: HTTP connector for API calls
+# - docker-hub: Docker Hub connector for artifacts
+# - production-k8s: Kubernetes connector for production cluster
+# - github: Git connector for manifests
+
+# Services to be configured in Harness
+# - user-service: Kubernetes service definition
+
+# Environments to be configured in Harness
+# - staging: Staging environment
+# - production: Production environment
+
+# Infrastructure definitions to be configured in Harness
+# - staging_k8s: Staging Kubernetes infrastructure
+# - production_k8s: Production Kubernetes infrastructure 

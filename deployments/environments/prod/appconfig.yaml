@@ -1,0 +1,138 @@
+# SRE Agent PROD Environment Configuration
+features:
+  enable_ai_shadow_analyst: true
+  enable_quality_gates: true
+  enable_scaling_suggestions: true
+  enable_debug_logging: false
+
+# External Service Configuration (PROD instances)
+external_services:
+  dynatrace:
+    api_url: "https://prod-tenant.dynatrace.com/api/v2"
+    api_token: "${DYNATRACE_API_TOKEN}"
+    environment: "production"
+  sonarqube:
+    url: "https://prod-sonarqube.your-domain.com"
+    token: "${SONARQUBE_TOKEN}"
+    quality_gate_threshold: 85  # Higher threshold for production
+  wiz:
+    url: "https://prod-wiz.your-domain.com"
+    client_id: "${WIZ_CLIENT_ID}"
+    client_secret: "${WIZ_CLIENT_SECRET}"
+    severity_threshold: "HIGH"  # Higher threshold for production
+  slack:
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+    channel: "#sre-prod-alerts"
+    notify_on_warning: false  # Only critical alerts in production
+
+# LLM Configuration (PROD - Production settings)
+llm_config:
+  model: "codellama:13b"  # Full model for production
+  temperature: 0.1
+  max_tokens: 4096
+  timeout: 60
+  retry_attempts: 3
+
+# MCP Configuration (PROD)
+mcp_config:
+  server_type: "dynatrace"  # Use real Dynatrace for production
+  dynatrace_url: "https://prod-tenant.dynatrace.com/api/v2"
+  timeout: 30
+  retry_attempts: 3
+
+# Fallback Strategies (PROD - Optimized)
+fallback_strategies:
+  new_deployment:
+    resource_sizing:
+      cpu_request: "500m"
+      memory_request: "512Mi"
+      cpu_limit: "1000m"
+      memory_limit: "1Gi"
+    scaling_configuration:
+      min_replicas: 3
+      max_replicas: 8
+      target_cpu_utilization: 70
+    infrastructure:
+      instance_type: "m5.large"
+      capacity_type: "spot"
+  
+  partial_data:
+    resource_sizing:
+      cpu_request: "600m"
+      memory_request: "768Mi"
+      cpu_limit: "1200m"
+      memory_limit: "1.5Gi"
+    scaling_configuration:
+      min_replicas: 3
+      max_replicas: 10
+      target_cpu_utilization: 65
+    infrastructure:
+      instance_type: "m5.xlarge"
+      capacity_type: "spot"
+
+# Environment Defaults (PROD)
+environment_defaults:
+  production:
+    resource_sizing:
+      cpu_request: "500m"
+      memory_request: "512Mi"
+    scaling_configuration:
+      min_replicas: 3
+      max_replicas: 10
+    infrastructure:
+      capacity_type: "spot"
+    cost_optimization: "production"
+    performance_requirements: "high"
+
+# Application Type Patterns (PROD - Optimized)
+application_type_patterns:
+  api_service:
+    resource_sizing:
+      cpu_request: "500m"
+      memory_request: "512Mi"
+    scaling_configuration:
+      target_cpu_utilization: 70
+  
+  worker_service:
+    resource_sizing:
+      cpu_request: "250m"
+      memory_request: "1Gi"
+    scaling_configuration:
+      target_cpu_utilization: 80
+  
+  frontend_service:
+    resource_sizing:
+      cpu_request: "200m"
+      memory_request: "256Mi"
+    scaling_configuration:
+      target_cpu_utilization: 60
+
+# Organization Policies (PROD)
+organization_policies:
+  cost_optimization: "production"
+  performance_requirements: "high"
+  security_compliance: "production"
+  deployment_frequency: "controlled"
+
+# Monitoring and Logging (PROD)
+monitoring:
+  log_level: "WARN"
+  enable_detailed_logging: false
+  enable_performance_metrics: true
+  enable_error_tracking: true
+  cloudwatch_log_retention: 90  # Longer retention for production
+
+# Quality Gate Configuration (PROD - Strict)
+quality_gates:
+  sonarqube:
+    enabled: true
+    quality_gate_threshold: 85
+    coverage_threshold: 80
+  security_scan:
+    enabled: true
+    severity_threshold: "HIGH"
+    fail_on_high: true  # Fail pipeline on high severity in production
+  performance_test:
+    enabled: true  # Enable performance tests in production
+  manual_approval:
+    enabled: true  # Manual approval required for production 

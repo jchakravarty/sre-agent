@@ -1,0 +1,383 @@
+version: '3.8'
+
+services:
+  # Development service for interactive development
+  development:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: development
+    container_name: sre-agent-dev
+    volumes:
+      - .:/app
+      - /app/__pycache__
+      - /app/.pytest_cache
+    environment:
+      - PYTHONPATH=/app
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - APP_ENV=dev
+      - AWS_APPCONFIG_EXTENSION_ENDPOINT=http://localstack:4566
+      - OLLAMA_API_ENDPOINT=http://ollama:11434/api/chat
+      - OLLAMA_MODEL=codellama:13b
+      - DYNATRACE_API_URL=http://wiremock:8080/dynatrace
+      - DYNATRACE_API_TOKEN=test-token
+      - MCP_CLIENT_TYPE=dynatrace
+      - LLM_CLIENT_TYPE=ollama
+      - DYNATRACE_MCP_SERVER_URL=http://dynatrace-mcp-server:3000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - localstack
+      - wiremock
+      - ollama
+      - dynatrace-mcp-server
+    networks:
+      - sre-network
+    command: >
+      sh -c "
+        echo 'Starting development environment...' &&
+        python -c 'import sys; print(f\"Python version: {sys.version}\")' &&
+        python -c 'import src.main; print(\"Application modules loaded successfully\")' &&
+        tail -f /dev/null
+      "
+
+  # Unit tests service
+  unit-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    container_name: sre-agent-unit-tests
+    volumes:
+      - .:/app
+      - ./test-reports:/app/test-reports
+      - ./htmlcov:/app/htmlcov
+    environment:
+      - PYTHONPATH=/app
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - APP_ENV=test
+      - MCP_CLIENT_TYPE=mock
+      - LLM_CLIENT_TYPE=ollama
+    networks:
+      - sre-network
+    command: >
+      sh -c "
+        echo 'Running unit tests...' &&
+        pytest tests/unit/ -v --cov=src --cov-report=html:/app/htmlcov --cov-report=term-missing --cov-report=xml:/app/test-reports/coverage.xml --junit-xml=/app/test-reports/junit.xml --tb=short
+      "
+
+  # Integration tests service
+  integration-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    container_name: sre-agent-integration-tests
+    volumes:
+      - .:/app
+      - ./test-reports:/app/test-reports
+      - ./htmlcov:/app/htmlcov
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - PYTHONPATH=/app
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - APP_ENV=test
+      - AWS_APPCONFIG_EXTENSION_ENDPOINT=http://localstack:4566
+      - LOCALSTACK_HOST=localstack
+      - WIREMOCK_HOST=wiremock
+      - OLLAMA_API_ENDPOINT=http://ollama:11434/api/chat
+      - OLLAMA_MODEL=codellama:13b
+      - DYNATRACE_API_URL=http://wiremock:8080/dynatrace
+      - DYNATRACE_API_TOKEN=test-token
+      - MCP_CLIENT_TYPE=dynatrace
+      - LLM_CLIENT_TYPE=ollama
+      - DYNATRACE_MCP_SERVER_URL=http://dynatrace-mcp-server:3000
+    depends_on:
+      - localstack
+      - wiremock
+      - ollama
+      - dynatrace-mcp-server
+    networks:
+      - sre-network
+    command: >
+      sh -c "
+        echo 'Waiting for services to be ready...' &&
+        sleep 15 &&
+        echo 'Running integration tests...' &&
+        pytest tests/integration/ -v --cov=src --cov-report=html:/app/htmlcov --cov-report=term-missing --cov-report=xml:/app/test-reports/integration-coverage.xml --junit-xml=/app/test-reports/integration-junit.xml --tb=short
+      "
+
+  # Performance tests service
+  performance-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    container_name: sre-agent-performance-tests
+    volumes:
+      - .:/app
+      - ./test-reports:/app/test-reports
+    environment:
+      - PYTHONPATH=/app
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - APP_ENV=test
+      - TARGET_HOST=http://development:8000
+    depends_on:
+      - development
+      - localstack
+      - wiremock
+      - ollama
+    networks:
+      - sre-network
+    command: >
+      sh -c "
+        echo 'Running performance tests...' &&
+        locust -f tests/performance/locustfile.py --host=http://development:8000 --headless -u 10 -r 2 -t 60s --html=/app/test-reports/performance-report.html
+      "
+
+  # Ollama Local LLM Service
+  ollama:
+    image: ollama/ollama:latest
+    container_name: sre-agent-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+    networks:
+      - sre-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
+  # Ollama Model Puller (runs once to download models)
+  ollama-puller:
+    image: ollama/ollama:latest
+    container_name: sre-agent-ollama-puller
+    depends_on:
+      - ollama
+    networks:
+      - sre-network
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    command: >
+      sh -c "
+        echo 'Waiting for Ollama to be ready...' &&
+        sleep 30 &&
+        echo 'Pulling CodeLlama model...' &&
+        ollama pull codellama:13b &&
+        echo 'Pulling Llama3 model as backup...' &&
+        ollama pull llama3:8b &&
+        echo 'Models downloaded successfully!'
+      "
+    profiles:
+      - setup
+
+  # Dynatrace MCP Server (using open-source implementation)
+  dynatrace-mcp-server:
+    image: node:18-alpine
+    container_name: sre-agent-dynatrace-mcp-server
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./dynatrace-mcp-server:/app
+    working_dir: /app
+    environment:
+      - DYNATRACE_API_URL=http://wiremock:8080/dynatrace
+      - DYNATRACE_API_TOKEN=test-token
+      - MCP_SERVER_NAME=dynatrace-mcp-server
+      - MCP_SERVER_VERSION=1.0.0
+    networks:
+      - sre-network
+    depends_on:
+      - wiremock
+    command: >
+      sh -c "
+        echo 'Setting up Dynatrace MCP Server...' &&
+        if [ ! -f package.json ]; then
+          echo 'Cloning dynatrace-mcp-server...' &&
+          apk add --no-cache git &&
+          git clone https://github.com/dynatrace/dynatrace-mcp-server.git /tmp/mcp-server &&
+          cp -r /tmp/mcp-server/* /app/ &&
+          npm install
+        fi &&
+        echo 'Starting Dynatrace MCP Server...' &&
+        npm start
+      "
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+
+  # LocalStack for AWS services mocking
+  localstack:
+    image: localstack/localstack:3.0
+    container_name: sre-agent-localstack
+    ports:
+      - "4566:4566"
+      - "4571:4571"
+    environment:
+      - SERVICES=lambda,apigateway,s3,dynamodb,logs,appconfig,secretsmanager
+      - DEBUG=1
+      - DATA_DIR=/tmp/localstack/data
+      - HOST_TMP_FOLDER=/tmp/localstack
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+    volumes:
+      - "/tmp/localstack:/tmp/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+    networks:
+      - sre-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # WireMock for external service mocking (Dynatrace, SonarQube, Wiz, Slack)
+  wiremock:
+    image: wiremock/wiremock:2.35.0
+    container_name: sre-agent-wiremock
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./tests/wiremock/mappings:/home/wiremock/mappings
+      - ./tests/wiremock/__files:/home/wiremock/__files
+    networks:
+      - sre-network
+    command: --global-response-templating --verbose
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/__admin/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Real service integration tests
+  real-service-tests:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    container_name: sre-agent-real-service-tests
+    volumes:
+      - .:/app
+      - ./test-reports:/app/test-reports
+      - ./htmlcov:/app/htmlcov
+    environment:
+      - PYTHONPATH=/app
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - APP_ENV=test
+      - AWS_APPCONFIG_EXTENSION_ENDPOINT=http://localstack:4566
+      - LOCALSTACK_HOST=localstack
+      - WIREMOCK_HOST=wiremock
+      - OLLAMA_API_ENDPOINT=http://ollama:11434/api/chat
+      - OLLAMA_MODEL=codellama:13b
+      - DYNATRACE_API_URL=http://wiremock:8080/dynatrace
+      - DYNATRACE_API_TOKEN=test-token
+      - MCP_CLIENT_TYPE=dynatrace
+      - LLM_CLIENT_TYPE=ollama
+      - DYNATRACE_MCP_SERVER_URL=http://dynatrace-mcp-server:3000
+    depends_on:
+      - localstack
+      - wiremock
+      - ollama
+      - dynatrace-mcp-server
+    networks:
+      - sre-network
+    command: >
+      sh -c "
+        echo 'Waiting for services to be ready...' &&
+        sleep 20 &&
+        echo 'Running real service integration tests...' &&
+        pytest tests/integration/test_real_service_integration.py -v -s --tb=short --junit-xml=/app/test-reports/real-service-junit.xml
+      "
+
+  # Test runner orchestrator
+  test-runner:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: test
+    container_name: sre-agent-test-runner
+    volumes:
+      - .:/app
+      - ./test-reports:/app/test-reports
+      - ./htmlcov:/app/htmlcov
+    environment:
+      - PYTHONPATH=/app
+      - MCP_CLIENT_TYPE=mock
+      - LLM_CLIENT_TYPE=ollama
+    depends_on:
+      - localstack
+      - wiremock
+      - ollama
+      - dynatrace-mcp-server
+    networks:
+      - sre-network
+    profiles:
+      - test-runner
+    command: >
+      sh -c "
+        echo 'Running complete test suite...' &&
+        echo 'Step 1: Unit Tests' &&
+        pytest tests/unit/ -v --cov=src --cov-report=term-missing &&
+        echo 'Step 2: Integration Tests' &&
+        pytest tests/integration/ -v &&
+        echo 'Step 3: Generating Reports' &&
+        pytest tests/unit/ tests/integration/ -v --cov=src --cov-report=html:/app/htmlcov --cov-report=xml:/app/test-reports/coverage.xml --junit-xml=/app/test-reports/junit.xml &&
+        echo 'All tests completed!'
+      "
+
+  # Service health checker
+  health-checker:
+    image: curlimages/curl:latest
+    container_name: sre-agent-health-checker
+    depends_on:
+      - ollama
+      - wiremock
+      - localstack
+      - dynatrace-mcp-server
+    networks:
+      - sre-network
+    profiles:
+      - health-check
+    command: >
+      sh -c "
+        echo 'Checking service health...' &&
+        echo 'Ollama:' && curl -f http://ollama:11434/api/version &&
+        echo 'WireMock:' && curl -f http://wiremock:8080/__admin/health &&
+        echo 'LocalStack:' && curl -f http://localstack:4566/health &&
+        echo 'Dynatrace MCP Server:' && curl -f http://dynatrace-mcp-server:3000/health &&
+        echo 'All services are healthy!'
+      "
+
+networks:
+  sre-network:
+    driver: bridge
+
+volumes:
+  localstack_data:
+  test_reports:
+  htmlcov:
+  ollama_data:

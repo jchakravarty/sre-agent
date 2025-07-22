@@ -1,0 +1,529 @@
+# Harness Service Object Integration Example for SRE Agent
+# This YAML can be imported into your Harness project to create a service
+
+service:
+  name: "user-service-sre-enhanced"
+  identifier: "user_service_sre_enhanced"
+  orgIdentifier: "your_org_id"
+  projectIdentifier: "your_project_id"
+  description: "User Service with SRE Agent integration for automated scaling and quality gates"
+  tags:
+    environment: "production"
+    team: "platform"
+    sre-agent: "enabled"
+  
+  # Service Definition
+  serviceDefinition:
+    type: "Kubernetes"
+    spec:
+      # Artifacts configuration
+      artifacts:
+        primary:
+          primaryArtifactRef: "primary-artifact"
+          sources:
+            - identifier: "primary"
+              spec:
+                connectorRef: "docker-hub"
+                imagePath: "your-org/user-service"
+                tag: "<+input>"
+                registryHostname: "docker.io"
+                digest: "<+input>"
+                type: "DockerRegistry"
+      
+      # Manifests configuration
+      manifests:
+        - manifest:
+            identifier: "k8s-manifest"
+            type: "K8sManifest"
+            spec:
+              store:
+                type: "Git"
+                spec:
+                  connectorRef: "github"
+                  gitFetchType: "Branch"
+                  paths:
+                    - "k8s/manifests/"
+                  branch: "main"
+                  repoName: "user-service"
+              valuesPaths:
+                - "k8s/values/production.yaml"
+              skipVersioning: false
+              enableDeclarativeRollback: true
+        
+        - manifest:
+            identifier: "kustomize-manifest"
+            type: "Kustomize"
+            spec:
+              store:
+                type: "Git"
+                spec:
+                  connectorRef: "github"
+                  gitFetchType: "Branch"
+                  paths:
+                    - "k8s/kustomize/"
+                  branch: "main"
+                  repoName: "user-service"
+              overlayConfiguration:
+                kustomizeYamlFolderPath: "production"
+              skipVersioning: false
+              enableDeclarativeRollback: true
+        
+        - manifest:
+            identifier: "helm-manifest"
+            type: "HelmChart"
+            spec:
+              store:
+                type: "Http"
+                spec:
+                  connectorRef: "helm-repo"
+                  chartName: "user-service"
+                  chartVersion: "<+input>"
+                  helmVersion: "V3"
+              valuesPaths:
+                - "k8s/helm/values.yaml"
+              skipVersioning: false
+              enableDeclarativeRollback: true
+      
+      # Variables for SRE Agent integration
+      variables:
+        - name: "SRE_AGENT_ENABLED"
+          type: "String"
+          description: "Enable SRE Agent integration"
+          required: true
+          default: "true"
+        
+        - name: "SRE_AGENT_URL"
+          type: "String"
+          description: "SRE Agent API Gateway URL"
+          required: true
+          default: "https://your-api-gateway-url.amazonaws.com/prod"
+        
+        - name: "SRE_AGENT_API_KEY"
+          type: "Secret"
+          description: "SRE Agent API Key"
+          required: true
+        
+        - name: "AUTO_SCALING_ENABLED"
+          type: "String"
+          description: "Enable automatic scaling recommendations"
+          required: true
+          default: "true"
+        
+        - name: "QUALITY_GATES_ENABLED"
+          type: "String"
+          description: "Enable quality gate checks"
+          required: true
+          default: "true"
+        
+        - name: "MONITORING_ENABLED"
+          type: "String"
+          description: "Enable monitoring integration"
+          required: true
+          default: "true"
+        
+        - name: "APP_NAME"
+          type: "String"
+          description: "Application name for SRE Agent"
+          required: true
+          default: "user-service"
+        
+        - name: "NAMESPACE"
+          type: "String"
+          description: "Kubernetes namespace"
+          required: true
+          default: "production"
+        
+        - name: "ENVIRONMENT"
+          type: "String"
+          description: "Deployment environment"
+          required: true
+          default: "production"
+        
+        - name: "DEPLOYMENT_TYPE"
+          type: "String"
+          description: "Type of deployment"
+          required: true
+          default: "rolling_update"
+        
+        - name: "CURRENT_TRAFFIC"
+          type: "String"
+          description: "Current traffic level"
+          required: true
+          default: "medium"
+      
+      # Configuration files
+      configFiles:
+        - configFile:
+            identifier: "sre-agent-config"
+            spec:
+              store:
+                type: "Harness"
+                spec:
+                  files:
+                    - "k8s/config/sre-agent-config.yaml"
+              isSecret: false
+        
+        - configFile:
+            identifier: "monitoring-config"
+            spec:
+              store:
+                type: "Harness"
+                spec:
+                  files:
+                    - "k8s/config/monitoring-config.yaml"
+              isSecret: false
+        
+        - configFile:
+            identifier: "scaling-config"
+            spec:
+              store:
+                type: "Harness"
+                spec:
+                  files:
+                    - "k8s/config/scaling-config.yaml"
+              isSecret: false
+      
+      # Secrets
+      secrets:
+        - secret:
+            identifier: "sre-agent-api-key"
+            spec:
+              type: "SecretText"
+              secretManagerIdentifier: "harnessSecretManager"
+              value: "<+input>"
+              description: "SRE Agent API Key"
+        
+        - secret:
+            identifier: "database-credentials"
+            spec:
+              type: "SecretText"
+              secretManagerIdentifier: "harnessSecretManager"
+              value: "<+input>"
+              description: "Database credentials"
+        
+        - secret:
+            identifier: "external-api-key"
+            spec:
+              type: "SecretText"
+              secretManagerIdentifier: "harnessSecretManager"
+              value: "<+input>"
+              description: "External API key"
+      
+      # Service hooks for SRE Agent integration
+      serviceHooks:
+        - serviceHook:
+            identifier: "pre-deployment-sre-check"
+            name: "Pre-Deployment SRE Check"
+            type: "PreDeployment"
+            spec:
+              store:
+                type: "Inline"
+                spec:
+                  content: |
+                    #!/bin/bash
+                    echo "Running pre-deployment SRE Agent check..."
+                    
+                    # Call SRE Agent quality gate
+                    curl -X POST "${SRE_AGENT_URL}/gate" \
+                      -H "Content-Type: application/json" \
+                      -H "X-API-Key: ${SRE_AGENT_API_KEY}" \
+                      -d '{
+                        "application": {
+                          "name": "'${APP_NAME}'",
+                          "commit_sha": "'${COMMIT_SHA}'",
+                          "artifact_id": "'${ARTIFACT_ID}'",
+                          "branch": "'${BRANCH}'",
+                          "repository": "'${REPOSITORY}'"
+                        },
+                        "quality_gates": {
+                          "enable_sonarqube": true,
+                          "enable_security_scan": true,
+                          "enable_performance_test": true
+                        }
+                      }'
+                    
+                    if [ $? -eq 0 ]; then
+                      echo "SRE Agent quality gate passed"
+                    else
+                      echo "SRE Agent quality gate failed"
+                      exit 1
+                    fi
+        
+        - serviceHook:
+            identifier: "post-deployment-sre-validation"
+            name: "Post-Deployment SRE Validation"
+            type: "PostDeployment"
+            spec:
+              store:
+                type: "Inline"
+                spec:
+                  content: |
+                    #!/bin/bash
+                    echo "Running post-deployment SRE Agent validation..."
+                    
+                    # Call SRE Agent validation
+                    curl -X POST "${SRE_AGENT_URL}/validate" \
+                      -H "Content-Type: application/json" \
+                      -H "X-API-Key: ${SRE_AGENT_API_KEY}" \
+                      -d '{
+                        "application": {
+                          "name": "'${APP_NAME}'",
+                          "namespace": "'${NAMESPACE}'"
+                        },
+                        "validation_type": "post_deployment",
+                        "checks": [
+                          "health_check",
+                          "performance_metrics",
+                          "resource_utilization",
+                          "security_scan"
+                        ]
+                      }'
+                    
+                    if [ $? -eq 0 ]; then
+                      echo "SRE Agent validation passed"
+                    else
+                      echo "SRE Agent validation failed"
+                      exit 1
+                    fi
+        
+        - serviceHook:
+            identifier: "scaling-recommendation"
+            name: "Get Scaling Recommendations"
+            type: "PreDeployment"
+            spec:
+              store:
+                type: "Inline"
+                spec:
+                  content: |
+                    #!/bin/bash
+                    echo "Getting SRE Agent scaling recommendations..."
+                    
+                    # Call SRE Agent for scaling suggestions
+                    RESPONSE=$(curl -s -X POST "${SRE_AGENT_URL}/suggest" \
+                      -H "Content-Type: application/json" \
+                      -H "X-API-Key: ${SRE_AGENT_API_KEY}" \
+                      -d '{
+                        "suggestion_type": "kubernetes_scaling",
+                        "application": {
+                          "name": "'${APP_NAME}'",
+                          "namespace": "'${NAMESPACE}'"
+                        },
+                        "context": {
+                          "environment": "'${ENVIRONMENT}'",
+                          "deployment_type": "'${DEPLOYMENT_TYPE}'",
+                          "current_traffic": "'${CURRENT_TRAFFIC}'"
+                        }
+                      }')
+                    
+                    if [ $? -eq 0 ]; then
+                      echo "Scaling recommendations received:"
+                      echo "$RESPONSE"
+                      
+                      # Extract values and set as environment variables
+                      HPA_MIN_REPLICAS=$(echo "$RESPONSE" | jq -r '.suggestion.hpa.minReplicas')
+                      HPA_MAX_REPLICAS=$(echo "$RESPONSE" | jq -r '.suggestion.hpa.maxReplicas')
+                      HPA_TARGET_CPU=$(echo "$RESPONSE" | jq -r '.suggestion.hpa.targetCPUUtilizationPercentage')
+                      CPU_REQUEST=$(echo "$RESPONSE" | jq -r '.suggestion.resources.cpu_request')
+                      MEMORY_REQUEST=$(echo "$RESPONSE" | jq -r '.suggestion.resources.memory_request')
+                      CPU_LIMIT=$(echo "$RESPONSE" | jq -r '.suggestion.resources.cpu_limit')
+                      MEMORY_LIMIT=$(echo "$RESPONSE" | jq -r '.suggestion.resources.memory_limit')
+                      
+                      # Export for use in deployment
+                      export HPA_MIN_REPLICAS
+                      export HPA_MAX_REPLICAS
+                      export HPA_TARGET_CPU
+                      export CPU_REQUEST
+                      export MEMORY_REQUEST
+                      export CPU_LIMIT
+                      export MEMORY_LIMIT
+                      
+                      echo "Scaling parameters set for deployment"
+                    else
+                      echo "Failed to get scaling recommendations"
+                      exit 1
+                    fi
+
+# Example Kubernetes manifests that work with this service
+# These would be stored in your Git repository
+
+# k8s/manifests/deployment.yaml
+# apiVersion: apps/v1
+# kind: Deployment
+# metadata:
+#   name: ${APP_NAME}
+#   namespace: ${NAMESPACE}
+#   labels:
+#     app: ${APP_NAME}
+#     sre-agent: enabled
+# spec:
+#   replicas: ${HPA_MIN_REPLICAS:-3}
+#   selector:
+#     matchLabels:
+#       app: ${APP_NAME}
+#   template:
+#     metadata:
+#       labels:
+#         app: ${APP_NAME}
+#         sre-agent: enabled
+#     spec:
+#       containers:
+#       - name: ${APP_NAME}
+#         image: ${IMAGE_PATH}:${IMAGE_TAG}
+#         resources:
+#           requests:
+#             cpu: ${CPU_REQUEST:-100m}
+#             memory: ${MEMORY_REQUEST:-128Mi}
+#           limits:
+#             cpu: ${CPU_LIMIT:-500m}
+#             memory: ${MEMORY_LIMIT:-512Mi}
+#         env:
+#         - name: SRE_AGENT_ENABLED
+#           value: "${SRE_AGENT_ENABLED}"
+#         - name: SRE_AGENT_URL
+#           value: "${SRE_AGENT_URL}"
+#         - name: APP_NAME
+#           value: "${APP_NAME}"
+#         - name: NAMESPACE
+#           value: "${NAMESPACE}"
+#         - name: ENVIRONMENT
+#           value: "${ENVIRONMENT}"
+#         ports:
+#         - containerPort: 8080
+#         livenessProbe:
+#           httpGet:
+#             path: /health
+#             port: 8080
+#           initialDelaySeconds: 30
+#           periodSeconds: 10
+#         readinessProbe:
+#           httpGet:
+#             path: /ready
+#             port: 8080
+#           initialDelaySeconds: 5
+#           periodSeconds: 5
+
+# k8s/manifests/hpa.yaml
+# apiVersion: autoscaling/v2
+# kind: HorizontalPodAutoscaler
+# metadata:
+#   name: ${APP_NAME}-hpa
+#   namespace: ${NAMESPACE}
+#   labels:
+#     app: ${APP_NAME}
+#     sre-agent: enabled
+# spec:
+#   scaleTargetRef:
+#     apiVersion: apps/v1
+#     kind: Deployment
+#     name: ${APP_NAME}
+#   minReplicas: ${HPA_MIN_REPLICAS:-3}
+#   maxReplicas: ${HPA_MAX_REPLICAS:-10}
+#   metrics:
+#   - type: Resource
+#     resource:
+#       name: cpu
+#       target:
+#         type: Utilization
+#         averageUtilization: ${HPA_TARGET_CPU:-70}
+#   - type: Resource
+#     resource:
+#       name: memory
+#       target:
+#         type: Utilization
+#         averageUtilization: 80
+
+# k8s/manifests/service.yaml
+# apiVersion: v1
+# kind: Service
+# metadata:
+#   name: ${APP_NAME}
+#   namespace: ${NAMESPACE}
+#   labels:
+#     app: ${APP_NAME}
+#     sre-agent: enabled
+# spec:
+#   selector:
+#     app: ${APP_NAME}
+#   ports:
+#   - protocol: TCP
+#     port: 80
+#     targetPort: 8080
+#   type: ClusterIP
+
+# Configuration files for SRE Agent integration
+
+# k8s/config/sre-agent-config.yaml
+# sreAgent:
+#   enabled: true
+#   apiUrl: ${SRE_AGENT_URL}
+#   apiKey: ${SRE_AGENT_API_KEY}
+#   application:
+#     name: ${APP_NAME}
+#     namespace: ${NAMESPACE}
+#     environment: ${ENVIRONMENT}
+#   features:
+#     qualityGates: ${QUALITY_GATES_ENABLED}
+#     autoScaling: ${AUTO_SCALING_ENABLED}
+#     monitoring: ${MONITORING_ENABLED}
+#   thresholds:
+#     cpuUtilization: 70
+#     memoryUtilization: 80
+#     responseTime: 200
+#     errorRate: 1.0
+
+# k8s/config/monitoring-config.yaml
+# monitoring:
+#   enabled: true
+#   metrics:
+#     - name: http_requests_total
+#       type: counter
+#       help: "Total number of HTTP requests"
+#     - name: http_request_duration_seconds
+#       type: histogram
+#       help: "HTTP request duration in seconds"
+#     - name: http_requests_in_flight
+#       type: gauge
+#       help: "Current number of HTTP requests being processed"
+#   alerts:
+#     - name: high_cpu_usage
+#       condition: cpu_usage > 80
+#       duration: 5m
+#     - name: high_memory_usage
+#       condition: memory_usage > 85
+#       duration: 5m
+#     - name: high_error_rate
+#       condition: error_rate > 2
+#       duration: 2m
+
+# k8s/config/scaling-config.yaml
+# scaling:
+#   enabled: true
+#   horizontalPodAutoscaler:
+#     minReplicas: ${HPA_MIN_REPLICAS:-3}
+#     maxReplicas: ${HPA_MAX_REPLICAS:-10}
+#     targetCPUUtilizationPercentage: ${HPA_TARGET_CPU:-70}
+#     targetMemoryUtilizationPercentage: 80
+#   verticalPodAutoscaler:
+#     enabled: false
+#   clusterAutoscaler:
+#     enabled: true
+#     scaleDownDelayAfterAdd: 10m
+#     scaleDownUnneeded: 10m
+
+# Usage Instructions:
+# 1. Import this YAML into your Harness project
+# 2. Configure the required connectors:
+#    - docker-hub: Docker Hub connector for artifacts
+#    - github: Git connector for manifests
+#    - helm-repo: Helm repository connector
+#    - harnessSecretManager: Secret manager connector
+# 3. Set up the required secrets in Harness Secret Manager
+# 4. Configure the service variables with your specific values
+# 5. Create the corresponding Kubernetes manifests in your Git repository
+# 6. Use this service in your Harness pipelines for deployments
+
+# Integration with SRE Agent:
+# - Pre-deployment: Quality gate checks via SRE Agent API
+# - During deployment: Scaling recommendations applied
+# - Post-deployment: Validation and monitoring setup
+# - Continuous: Automated scaling based on SRE Agent recommendations 

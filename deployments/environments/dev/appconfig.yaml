@@ -1,0 +1,138 @@
+# SRE Agent DEV Environment Configuration
+features:
+  enable_ai_shadow_analyst: true
+  enable_quality_gates: true
+  enable_scaling_suggestions: true
+  enable_debug_logging: true
+
+# External Service Configuration (DEV instances)
+external_services:
+  dynatrace:
+    api_url: "https://dev-tenant.dynatrace.com/api/v2"
+    api_token: "${DYNATRACE_API_TOKEN}"
+    environment: "dev"
+  sonarqube:
+    url: "https://dev-sonarqube.your-domain.com"
+    token: "${SONARQUBE_TOKEN}"
+    quality_gate_threshold: 70  # Lower threshold for dev
+  wiz:
+    url: "https://dev-wiz.your-domain.com"
+    client_id: "${WIZ_CLIENT_ID}"
+    client_secret: "${WIZ_CLIENT_SECRET}"
+    severity_threshold: "MEDIUM"  # Lower threshold for dev
+  slack:
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+    channel: "#sre-dev-alerts"
+    notify_on_warning: true  # More notifications in dev
+
+# LLM Configuration (DEV - Conservative settings)
+llm_config:
+  model: "codellama:7b"  # Smaller, faster model for dev
+  temperature: 0.1
+  max_tokens: 2048
+  timeout: 30
+  retry_attempts: 2
+
+# MCP Configuration (DEV)
+mcp_config:
+  server_type: "mock"  # Use mock for dev environment
+  dynatrace_url: "https://dev-tenant.dynatrace.com/api/v2"
+  timeout: 10
+  retry_attempts: 1
+
+# Fallback Strategies (DEV - Conservative)
+fallback_strategies:
+  new_deployment:
+    resource_sizing:
+      cpu_request: "200m"
+      memory_request: "256Mi"
+      cpu_limit: "400m"
+      memory_limit: "512Mi"
+    scaling_configuration:
+      min_replicas: 1
+      max_replicas: 3
+      target_cpu_utilization: 80
+    infrastructure:
+      instance_type: "t3.small"
+      capacity_type: "on-demand"
+  
+  partial_data:
+    resource_sizing:
+      cpu_request: "250m"
+      memory_request: "384Mi"
+      cpu_limit: "500m"
+      memory_limit: "768Mi"
+    scaling_configuration:
+      min_replicas: 1
+      max_replicas: 4
+      target_cpu_utilization: 75
+    infrastructure:
+      instance_type: "t3.medium"
+      capacity_type: "on-demand"
+
+# Environment Defaults (DEV)
+environment_defaults:
+  dev:
+    resource_sizing:
+      cpu_request: "200m"
+      memory_request: "256Mi"
+    scaling_configuration:
+      min_replicas: 1
+      max_replicas: 3
+    infrastructure:
+      capacity_type: "on-demand"
+    cost_optimization: "development"
+    performance_requirements: "basic"
+
+# Application Type Patterns (DEV - Conservative)
+application_type_patterns:
+  api_service:
+    resource_sizing:
+      cpu_request: "200m"
+      memory_request: "256Mi"
+    scaling_configuration:
+      target_cpu_utilization: 80
+  
+  worker_service:
+    resource_sizing:
+      cpu_request: "150m"
+      memory_request: "512Mi"
+    scaling_configuration:
+      target_cpu_utilization: 85
+  
+  frontend_service:
+    resource_sizing:
+      cpu_request: "100m"
+      memory_request: "128Mi"
+    scaling_configuration:
+      target_cpu_utilization: 70
+
+# Organization Policies (DEV)
+organization_policies:
+  cost_optimization: "development"
+  performance_requirements: "basic"
+  security_compliance: "development"
+  deployment_frequency: "frequent"
+
+# Monitoring and Logging (DEV)
+monitoring:
+  log_level: "DEBUG"
+  enable_detailed_logging: true
+  enable_performance_metrics: true
+  enable_error_tracking: true
+  cloudwatch_log_retention: 7  # Shorter retention for dev
+
+# Quality Gate Configuration (DEV - Lenient)
+quality_gates:
+  sonarqube:
+    enabled: true
+    quality_gate_threshold: 70
+    coverage_threshold: 50
+  security_scan:
+    enabled: true
+    severity_threshold: "MEDIUM"
+    fail_on_high: false  # Don't fail pipeline on high severity in dev
+  performance_test:
+    enabled: false  # Disable performance tests in dev
+  manual_approval:
+    enabled: false  # No manual approval needed in dev 

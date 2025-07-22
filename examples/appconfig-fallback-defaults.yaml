@@ -1,0 +1,169 @@
+# AWS AppConfig Configuration for SRE Agent Fallback Values
+# This configuration provides intelligent fallback values when historical metrics are unavailable
+
+fallback_strategies:
+  # Default values for new deployments (no historical data)
+  new_deployment:
+    resource_sizing:
+      cpu_request: "250m"        # Conservative baseline
+      memory_request: "256Mi"    # Microservice standard  
+      cpu_limit: "500m"          # 2x request ratio
+      memory_limit: "512Mi"      # 2x request ratio
+    
+    scaling_configuration:
+      min_replicas: 2            # High availability minimum
+      max_replicas: 6            # Conservative upper bound
+      target_cpu: 70             # Industry standard
+    
+    infrastructure:
+      instance_type: "m5.medium" # Cost-effective baseline
+      capacity_type: "on-demand" # Stability over cost for new apps
+      arch: "amd64"             # Default architecture
+
+  # Values for partial data scenarios (<3 days of metrics)
+  partial_data:
+    safety_margin: 0.5          # 50% safety margin on available metrics
+    scaling_configuration:
+      min_replicas: 2
+      max_replicas: 8            # Slightly more aggressive than new
+      target_cpu: 70
+    
+    infrastructure:
+      capacity_type: "spot"      # More cost-optimized
+      instance_type: "m5.medium"
+
+# Environment-specific overrides
+environment_defaults:
+  production:
+    resource_sizing:
+      cpu_request: "500m"        # Higher baseline for prod
+      memory_request: "512Mi"
+      cpu_limit: "1000m"
+      memory_limit: "1Gi"
+    scaling_configuration:
+      min_replicas: 3            # Higher availability for prod
+      max_replicas: 12
+    infrastructure:
+      capacity_type: "on-demand" # Prefer stability in prod
+
+  staging:
+    resource_sizing:
+      cpu_request: "250m"
+      memory_request: "256Mi"
+      cpu_limit: "500m"
+      memory_limit: "512Mi"
+    scaling_configuration:
+      min_replicas: 1            # Lower cost for staging
+      max_replicas: 4
+    infrastructure:
+      capacity_type: "spot"      # Cost-optimized for staging
+
+  development:
+    resource_sizing:
+      cpu_request: "100m"        # Minimal for dev
+      memory_request: "128Mi"
+      cpu_limit: "250m"
+      memory_limit: "256Mi"
+    scaling_configuration:
+      min_replicas: 1
+      max_replicas: 2
+    infrastructure:
+      capacity_type: "spot"
+      instance_type: "t3.small"  # Smaller instances for dev
+
+# Application type patterns for intelligent inference
+application_type_patterns:
+  api_service:
+    indicators:
+      - "api"
+      - "service"
+      - "rest"
+      - "graphql"
+    scaling_configuration:
+      min_replicas: 2
+      max_replicas: 10
+      target_cpu: 70
+    resource_sizing:
+      cpu_request: "300m"
+      memory_request: "256Mi"
+
+  worker_service:
+    indicators:
+      - "worker"
+      - "job"
+      - "queue"
+      - "processor"
+    scaling_configuration:
+      min_replicas: 1
+      max_replicas: 5
+      target_cpu: 80              # Workers can run hotter
+    resource_sizing:
+      cpu_request: "500m"         # Workers often CPU intensive
+      memory_request: "512Mi"
+
+  frontend_service:
+    indicators:
+      - "frontend"
+      - "ui"
+      - "web"
+      - "react"
+      - "vue"
+      - "angular"
+    scaling_configuration:
+      min_replicas: 2
+      max_replicas: 8
+      target_cpu: 60              # Keep frontend responsive
+    resource_sizing:
+      cpu_request: "200m"         # Frontend usually lighter
+      memory_request: "128Mi"
+
+# Organization policies that can be referenced
+organization_policies:
+  cost_optimization:
+    cost_optimized:
+      capacity_type: "spot"
+      prefer_smaller_instances: true
+      target_cpu: 80              # Run hotter to save costs
+    
+    balanced:
+      capacity_type: "spot"
+      target_cpu: 70
+    
+    performance_optimized:
+      capacity_type: "on-demand"
+      target_cpu: 60              # More headroom
+      prefer_larger_instances: true
+
+# Namespace-based inference rules
+namespace_inference:
+  production_patterns:
+    - "prod"
+    - "production"
+    - "live"
+  staging_patterns:
+    - "staging"
+    - "stage"
+    - "uat"
+    - "test"
+  development_patterns:
+    - "dev"
+    - "development"
+    - "sandbox"
+
+# Confidence scoring for recommendations
+confidence_levels:
+  full_historical_data:
+    score: 95
+    description: "7+ days of complete Dynatrace metrics"
+  
+  partial_data:
+    score: 75
+    description: "1-6 days of Dynatrace metrics with fallbacks"
+  
+  pattern_matching:
+    score: 60
+    description: "Similar application patterns in namespace"
+  
+  fallback_only:
+    score: 40
+    description: "Industry best practices and environment defaults" 

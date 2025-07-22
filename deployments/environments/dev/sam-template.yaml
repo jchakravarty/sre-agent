@@ -1,0 +1,445 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SRE Agent DEV Environment - Lambda and ECS Fargate Services
+
+Parameters:
+  AppConfigApplicationId:
+    Type: String
+    Description: AppConfig Application ID
+  
+  AppConfigEnvironmentId:
+    Type: String
+    Description: AppConfig Environment ID
+  
+  AppConfigConfigurationProfileId:
+    Type: String
+    Description: AppConfig Configuration Profile ID
+  
+  LambdaImageUri:
+    Type: String
+    Description: ECR URI for Lambda container image
+  
+  LLMImageUri:
+    Type: String
+    Description: ECR URI for LLM server container image
+  
+  MCPImageUri:
+    Type: String
+    Description: ECR URI for MCP server container image
+  
+  LambdaMemory:
+    Type: Number
+    Default: 512
+    Description: Lambda function memory in MB
+  
+  LambdaTimeout:
+    Type: Number
+    Default: 15
+    Description: Lambda function timeout in seconds
+  
+  LLMCPU:
+    Type: Number
+    Default: 256
+    Description: LLM server CPU units
+  
+  LLMMemory:
+    Type: Number
+    Default: 512
+    Description: LLM server memory in MB
+  
+  MCPCPU:
+    Type: Number
+    Default: 256
+    Description: MCP server CPU units
+  
+  MCPMemory:
+    Type: Number
+    Default: 512
+    Description: MCP server memory in MB
+  
+  MinReplicas:
+    Type: Number
+    Default: 1
+    Description: Minimum number of replicas for ECS services
+  
+  MaxReplicas:
+    Type: Number
+    Default: 2
+    Description: Maximum number of replicas for ECS services
+
+Globals:
+  Function:
+    Timeout: !Ref LambdaTimeout
+    MemorySize: !Ref LambdaMemory
+    Environment:
+      Variables:
+        ENVIRONMENT: dev
+        LOG_LEVEL: DEBUG
+        APPCONFIG_APPLICATION_ID: !Ref AppConfigApplicationId
+        APPCONFIG_ENVIRONMENT_ID: !Ref AppConfigEnvironmentId
+        APPCONFIG_CONFIGURATION_PROFILE_ID: !Ref AppConfigConfigurationProfileId
+
+Resources:
+  # VPC for ECS services
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: sre-agent-dev-vpc
+
+  # Internet Gateway
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: sre-agent-dev-igw
+
+  # Attach Internet Gateway to VPC
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Subnet
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.1.0/24
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: sre-agent-dev-public-subnet
+
+  # Route Table
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: sre-agent-dev-public-rt
+
+  # Route to Internet Gateway
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  # Associate Route Table with Subnet
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # Security Group for ECS Services
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for SRE Agent ECS services
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 11434
+          ToPort: 11434
+          CidrIp: 0.0.0.0/0
+          Description: LLM Server API
+        - IpProtocol: tcp
+          FromPort: 3000
+          ToPort: 3000
+          CidrIp: 0.0.0.0/0
+          Description: MCP Server API
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+
+  # ECS Cluster
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: sre-agent-dev-cluster
+      CapacityProviders:
+        - FARGATE
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: FARGATE
+          Weight: 1
+
+  # Task Execution Role
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+      Policies:
+        - PolicyName: ECRAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ecr:GetAuthorizationToken
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:BatchGetImage
+                Resource: '*'
+
+  # Task Role
+  TaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AppConfigAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - appconfig:GetConfiguration
+                  - appconfig:StartConfigurationSession
+                Resource: '*'
+
+  # LLM Server Task Definition
+  LLMTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: sre-agent-llm-dev
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref LLMCPU
+      Memory: !Ref LLMMemory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: llm-server
+          Image: !Ref LLMImageUri
+          PortMappings:
+            - ContainerPort: 11434
+              Protocol: tcp
+          Environment:
+            - Name: OLLAMA_HOST
+              Value: 0.0.0.0
+            - Name: OLLAMA_ORIGINS
+              Value: "*"
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref LLMLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: llm-server
+
+  # MCP Server Task Definition
+  MCPTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: sre-agent-mcp-dev
+      NetworkMode: awsvpc
+      RequiresCompatibilities:
+        - FARGATE
+      Cpu: !Ref MCPCPU
+      Memory: !Ref MCPMemory
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt TaskRole.Arn
+      ContainerDefinitions:
+        - Name: mcp-server
+          Image: !Ref MCPImageUri
+          PortMappings:
+            - ContainerPort: 3000
+              Protocol: tcp
+          Environment:
+            - Name: MCP_SERVER_TYPE
+              Value: mock
+            - Name: DYNATRACE_API_URL
+              Value: https://dev-tenant.dynatrace.com/api/v2
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-group: !Ref MCPLogGroup
+              awslogs-region: !Ref AWS::Region
+              awslogs-stream-prefix: mcp-server
+
+  # LLM Service
+  LLMService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: sre-agent-llm-dev
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref LLMTaskDefinition
+      DesiredCount: !Ref MinReplicas
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - !Ref PublicSubnet
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+
+  # MCP Service
+  MCPService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: sre-agent-mcp-dev
+      Cluster: !Ref ECSCluster
+      TaskDefinition: !Ref MCPTaskDefinition
+      DesiredCount: !Ref MinReplicas
+      LaunchType: FARGATE
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          Subnets:
+            - !Ref PublicSubnet
+      DeploymentConfiguration:
+        MaximumPercent: 200
+        MinimumHealthyPercent: 50
+
+  # CloudWatch Log Groups
+  LLMLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/sre-agent-llm-dev
+      RetentionInDays: 7
+
+  MCPLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /ecs/sre-agent-mcp-dev
+      RetentionInDays: 7
+
+  # SRE Agent Lambda Function
+  SREAgentFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sre-agent-dev
+      PackageType: Image
+      ImageUri: !Ref LambdaImageUri
+      ReservedConcurrencyLimit: 10
+      Environment:
+        Variables:
+          LLM_SERVICE_URL: !Sub "http://${LLMService.PrimaryPrivateIp}:11434"
+          MCP_SERVICE_URL: !Sub "http://${MCPService.PrimaryPrivateIp}:3000"
+      Policies:
+        - AppConfigReadPolicy:
+            ApplicationId: !Ref AppConfigApplicationId
+            EnvironmentId: !Ref AppConfigEnvironmentId
+            ConfigurationProfileId: !Ref AppConfigConfigurationProfileId
+        - CloudWatchLogsFullAccess
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ecs:DescribeServices
+                - ecs:DescribeTasks
+              Resource: '*'
+
+  # API Gateway
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: sre-agent-dev-api
+      StageName: dev
+      Cors:
+        AllowMethods: "'GET,POST,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+        AllowOrigin: "'*'"
+      DefinitionBody:
+        openapi: 3.0.1
+        info:
+          title: SRE Agent DEV API
+          version: 1.0.0
+        paths:
+          /gate:
+            post:
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SREAgentFunction.Arn}/invocations"
+                passthroughBehavior: when_no_match
+                httpMethod: POST
+                type: aws_proxy
+              responses:
+                '200':
+                  description: Quality gate result
+          /suggest:
+            post:
+              x-amazon-apigateway-integration:
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SREAgentFunction.Arn}/invocations"
+                passthroughBehavior: when_no_match
+                httpMethod: POST
+                type: aws_proxy
+              responses:
+                '200':
+                  description: Scaling suggestions
+
+  # Lambda Permission for API Gateway
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref SREAgentFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/*"
+
+Outputs:
+  SREAgentApiUrl:
+    Description: API Gateway URL for SRE Agent
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/dev"
+    Export:
+      Name: !Sub "${AWS::StackName}-ApiUrl"
+
+  FunctionName:
+    Description: SRE Agent Lambda function name
+    Value: !Ref SREAgentFunction
+    Export:
+      Name: !Sub "${AWS::StackName}-FunctionName"
+
+  LLMServiceUrl:
+    Description: LLM Service URL
+    Value: !Sub "http://${LLMService.PrimaryPrivateIp}:11434"
+    Export:
+      Name: !Sub "${AWS::StackName}-LLMServiceUrl"
+
+  MCPServiceUrl:
+    Description: MCP Service URL
+    Value: !Sub "http://${MCPService.PrimaryPrivateIp}:3000"
+    Export:
+      Name: !Sub "${AWS::StackName}-MCPServiceUrl"
+
+  ECSClusterName:
+    Description: ECS Cluster name
+    Value: !Ref ECSCluster
+    Export:
+      Name: !Sub "${AWS::StackName}-ECSClusterName"
+
+  VPCId:
+    Description: VPC ID
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${AWS::StackName}-VPCId" 

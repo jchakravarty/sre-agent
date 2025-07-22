@@ -1,0 +1,16 @@
+# AWS Lambda Container Image for SRE Orchestration Agent
+FROM public.ecr.aws/lambda/python:3.11
+
+# Set working directory
+WORKDIR ${LAMBDA_TASK_ROOT}
+
+# Copy requirements and install dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY src/ .
+
+# Set the CMD to your handler
+CMD ["main.lambda_handler"] 

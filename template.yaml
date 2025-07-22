@@ -1,0 +1,109 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: SRE Orchestration Agent
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 512
+    Runtime: python3.8
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        APP_ENV: dev # This will be overridden by pipeline
+        # MCP_CLIENT_TYPE: mock # Uncomment for local testing
+        # LLM_CLIENT_TYPE: ollama # or 'byo'
+
+Parameters:
+  AppConfigApplicationId:
+    Type: String
+    Description: The ID of the AWS AppConfig Application.
+  AppConfigEnvironmentId:
+    Type: String
+    Description: The ID of the AWS AppConfig Environment.
+  AppConfigConfigurationProfileId:
+    Type: String
+    Description: The ID of the AWS AppConfig Configuration Profile.
+
+Resources:
+  # --- IAM Role for Lambda ---
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: LambdaBasicExecution
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: '*'
+        - PolicyName: AppConfigAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: appconfig:GetLatestConfiguration
+                Resource: !Sub "arn:aws:appconfig:${AWS::Region}:${AWS::AccountId}:application/${AppConfigApplicationId}/environment/${AppConfigEnvironmentId}/configurationprofile/${AppConfigConfigurationProfileId}"
+
+  # --- AppConfig Lambda Layer ---
+  AppConfigLambdaLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: AppConfigLambdaLayer
+      ContentUri: /path/to/your/appconfig/layer.zip # You need to provide the path to the AppConfig layer zip
+      CompatibleRuntimes:
+        - python3.8
+
+  # --- Quality Gate Function ---
+  QualityGateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sre-agent-gate
+      CodeUri: src/
+      Handler: main.gate_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Layers:
+        - !Ref AppConfigLambdaLayer
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /gate
+            Method: post
+
+  # --- Scaling Suggestion Function ---
+  SuggestionFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: sre-agent-suggest
+      CodeUri: src/
+      Handler: main.suggestion_handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Layers:
+        - !Ref AppConfigLambdaLayer
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /suggest
+            Method: post
+
+Outputs:
+  QualityGateApi:
+    Description: "API Gateway endpoint URL for Quality Gate function"
+    Value: !Sub "https://*.execute-api.${AWS::Region}.amazonaws.com/Prod/gate"
+  SuggestionApi:
+    Description: "API Gateway endpoint URL for Suggestion function"
+    Value: !Sub "https://*.execute-api.${AWS::Region}.amazonaws.com/Prod/suggest"

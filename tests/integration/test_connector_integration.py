@@ -7,7 +7,6 @@ from src.connectors.dynatrace_client import DynatraceClient
 from src.connectors.sonarqube_client import SonarQubeClient
 from src.connectors.wiz_client import WizClient
 from src.connectors.slack_client import SlackClient
-from src.connectors.git_client import GitClient
 
 
 class TestConnectorIntegration:
@@ -42,6 +41,8 @@ class TestConnectorIntegration:
                     
                     result = client.send_event(test_event)
                     
+                    # Add type checking to handle potential None return
+                    assert result is not None
                     assert result['eventIngestResults'][0]['status'] == 'OK'
                     assert 'correlationId' in result['eventIngestResults'][0]
                     
@@ -148,6 +149,8 @@ class TestConnectorIntegration:
                     
                     result = client.send_notification(test_notification)
                     
+                    # Add type checking to handle potential None return
+                    assert result is not None
                     assert result['ok'] is True
                     assert 'ts' in result['message']
                     
@@ -155,32 +158,6 @@ class TestConnectorIntegration:
                     mock_post.assert_called_once()
                     call_args = mock_post.call_args
                     assert 'hooks.slack.com' in call_args[0][0]
-
-    def test_git_client_integration(self):
-        """Test Git client integration."""
-        mock_file_response = {
-            'content': 'SGVsbG8gV29ybGQ=',  # base64 encoded "Hello World"
-            'encoding': 'base64'
-        }
-        
-        with patch.dict(os.environ, {
-            'GIT_API_TOKEN': 'test_github_token'
-        }):
-            with patch('src.utils.secrets_manager.get_secret_value', side_effect=lambda x: os.environ.get(x)):
-                with patch('requests.get') as mock_get:
-                    mock_get.return_value.status_code = 200
-                    mock_get.return_value.json.return_value = mock_file_response
-                    
-                    client = GitClient()
-                    result = client.get_file_content('test-org/test-repo', 'README.md', 'abc123')
-                    
-                    assert result == 'Hello World'
-                    
-                    # Verify API was called correctly
-                    mock_get.assert_called_once()
-                    call_args = mock_get.call_args
-                    assert 'api.github.com' in call_args[0][0]
-                    assert call_args[1]['headers']['Authorization'] == 'token test_github_token'
 
     def test_connector_error_handling(self):
         """Test error handling in connectors."""
@@ -245,7 +222,7 @@ class TestConnectorIntegration:
                         'title': 'Test Event'
                     }
                     
-                    # Should handle timeout gracefully
+                    # Should handle error gracefully
                     result = client.send_event(test_event)
                     
                     # Should return None due to timeout
@@ -268,8 +245,7 @@ class TestConnectorIntegration:
             'SONAR_API_TOKEN': 'test_sonar_token',
             'WIZ_API_URL': 'https://api.wiz.io',
             'WIZ_API_TOKEN': 'test_wiz_token',
-            'SLACK_WEBHOOK_URL': 'https://hooks.slack.com/test',
-            'GIT_API_TOKEN': 'test_github_token'
+            'SLACK_WEBHOOK_URL': 'https://hooks.slack.com/test'
         }):
             with patch('src.utils.secrets_manager.get_secret_value', side_effect=lambda x: os.environ.get(x)):
                 with patch('requests.post') as mock_post:
@@ -309,10 +285,12 @@ class TestConnectorIntegration:
                         wiz_result = wiz_client.get_cve_status('test-artifact')
                         slack_result = slack_client.send_notification({'text': 'Test notification'})
 
-                        # Verify results
+                        # Verify results with proper type checking
+                        assert dt_result is not None
                         assert dt_result['eventIngestResults'][0]['status'] == 'OK'
                         assert sq_result['status'] == 'SUCCESS'
                         assert wiz_result['status'] == 'SUCCESS'
+                        assert slack_result is not None
                         assert slack_result['ok'] is True
 
                         # Verify all APIs were called

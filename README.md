@@ -66,7 +66,6 @@ graph TB
         SQ[SonarQube]
         WIZ[Wiz Security]
         SLACK[Slack]
-        GIT[Git Repository]
     end
 
     subgraph "Observability Layer"
@@ -100,7 +99,6 @@ graph TB
     LAMBDA --> SQ
     LAMBDA --> WIZ
     LAMBDA --> SLACK
-    LAMBDA --> GIT
     LAMBDA --> CLOUDWATCH
     LAMBDA --> METRICS
     LAMBDA --> ALARMS
@@ -143,7 +141,6 @@ graph TB
         SQ_CLIENT[SonarQube Client]
         WIZ_CLIENT[Wiz Client]
         SLACK_CLIENT[Slack Client]
-        GIT_CLIENT[Git Client]
     end
 
     subgraph "AI & MCP Layer"
@@ -184,7 +181,6 @@ graph TB
     SQ_CLIENT --> AWS_SERVICES
     WIZ_CLIENT --> AWS_SERVICES
     SLACK_CLIENT --> AWS_SERVICES
-    GIT_CLIENT --> AWS_SERVICES
     MCP_CLIENT --> K8S_API
     LLM_CLIENT --> MONITORING
 ```
@@ -212,7 +208,6 @@ graph TB
 - **SonarQube Client**: Code quality and security analysis
 - **Wiz Client**: Security vulnerability scanning
 - **Slack Client**: Notification delivery
-- **Git Client**: Repository information and commit data
 
 #### 5. **AI & MCP Layer**
 - **LLM Client**: Integration with local Ollama or BYO LLM

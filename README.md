@@ -679,3 +679,362 @@ For issues and questions:
 ---
 
 **Ready to deploy?** Check out the [Deployment Guide](DEPLOYMENT_GUIDE.md) for detailed step-by-step instructions!
+
+## 🔍 Dynatrace MCP Server Query Documentation
+
+The SRE Orchestration Agent integrates with Dynatrace through a Model Context Protocol (MCP) server to gather comprehensive metrics, performance data, and operational insights for intelligent scaling recommendations.
+
+### MCP Query Overview
+
+The Dynatrace MCP client provides a standardized interface for querying Dynatrace APIs, enabling the AI engine to gather real-time and historical data for informed decision-making.
+
+### Available MCP Query Methods
+
+#### 1. **Entity Discovery Queries**
+
+##### `check_data_availability(app_name, namespace)`
+**Purpose**: Determines what historical data is available for an application
+**Parameters**:
+- `app_name` (string): Application name
+- `namespace` (string): Kubernetes namespace
+
+**Internal Queries**:
+- **Entity Discovery**: Multiple entity selector patterns to find the service
+- **Historical Metrics Check**: 7-day metrics availability analysis
+
+**Response Types**:
+- `full_historical_data`: 5+ days with 80%+ completeness
+- `partial_data`: 1+ days with 30%+ completeness  
+- `no_historical_data`: Insufficient data available
+
+**Example Response**:
+```json
+{
+  "status": "full_historical_data",
+  "details": {
+    "days_available": 7,
+    "completeness": 95.2,
+    "entity_id": "SERVICE-1234567890ABCDEF"
+  }
+}
+```
+
+##### `discover_entity(app_name, namespace)`
+**Purpose**: Finds the Dynatrace entity ID for an application
+**Parameters**:
+- `app_name` (string): Application name
+- `namespace` (string): Kubernetes namespace
+
+**Entity Selector Patterns**:
+1. `type(SERVICE),entityName("{app_name}")`
+2. `type(SERVICE),tag("app:{app_name}")`
+3. `type(SERVICE),tag("k8s.namespace.name:{namespace}"),entityName.contains("{app_name}")`
+4. `type(SERVICE),tag("k8s.deployment.name:{app_name}")`
+
+**Response**: Entity ID string or null if not found
+
+#### 2. **Historical Metrics Queries**
+
+##### `get_historical_metrics(entity_id, days=7)`
+**Purpose**: Retrieves historical metrics for trend analysis
+**Parameters**:
+- `entity_id` (string): Dynatrace entity ID
+- `days` (integer): Number of days to analyze (default: 7)
+
+**Metrics Collected**:
+- `builtin:service.cpu.time` - CPU utilization
+- `builtin:service.memory.usage` - Memory usage
+- `builtin:service.requestCount.rate` - Request rate
+- `builtin:service.response.time` - Response time
+
+**Query Parameters**:
+```json
+{
+  "metricSelector": "builtin:service.cpu.time,builtin:service.memory.usage,builtin:service.requestCount.rate,builtin:service.response.time",
+  "entitySelector": "type(SERVICE),entityId({entity_id})",
+  "resolution": "1h",
+  "from": "now-7d"
+}
+```
+
+**Response Structure**:
+```json
+{
+  "builtin:service.cpu.time": {
+    "avg": 45.2,
+    "max": 89.7,
+    "min": 12.3,
+    "data_points": 168,
+    "days_available": 7
+  },
+  "builtin:service.memory.usage": {
+    "avg": 512.5,
+    "max": 1024.0,
+    "min": 256.0,
+    "data_points": 168,
+    "days_available": 7
+  }
+}
+```
+
+##### `get_trend_analysis(entity_id, days=7)`
+**Purpose**: Analyzes metrics trends to infer traffic patterns
+**Parameters**:
+- `entity_id` (string): Dynatrace entity ID
+- `days` (integer): Number of days to analyze (default: 7)
+
+**Analysis Patterns**:
+- **Traffic Patterns**: `steady`, `peak_hours`, `gradual_growth`, `high_peak_hours`
+- **CPU Trends**: `stable`, `spiky`, `increasing`
+- **Memory Trends**: `stable`, `increasing`, `decreasing`
+- **Request Rate Trends**: `stable`, `increasing`, `moderate_growth`
+
+**Response Structure**:
+```json
+{
+  "traffic_pattern": "peak_hours",
+  "cpu_trend": "spiky",
+  "memory_trend": "stable",
+  "request_rate_trend": "increasing"
+}
+```
+
+#### 3. **Real-time Performance Queries**
+
+##### `get_performance_metrics(entity_id)`
+**Purpose**: Gets current performance metrics for a service
+**Parameters**:
+- `entity_id` (string): Dynatrace entity ID
+
+**Metrics Collected**:
+- `builtin:container.cpu.usage.millicores:percentile(90)` - 90th percentile CPU usage
+- `builtin:container.memory.workingSet.bytes:percentile(90)` - 90th percentile memory usage
+- `builtin:container.cpu.requests` - CPU requests
+- `builtin:container.memory.requests` - Memory requests
+
+**Query Parameters**:
+```json
+{
+  "metricSelector": "builtin:container.cpu.usage.millicores:percentile(90),builtin:container.memory.workingSet.bytes:percentile(90),builtin:container.cpu.requests,builtin:container.memory.requests",
+  "entitySelector": "type(PROCESS_GROUP_INSTANCE),tag({entity_id})",
+  "resolution": "1h"
+}
+```
+
+**Response Structure**:
+```json
+{
+  "cpu_usage_millicores_p90": 750,
+  "memory_usage_mb_p90": 512,
+  "pod_cpu_requests_millicores": 500,
+  "pod_memory_requests_mb": 1024
+}
+```
+
+#### 4. **Health and Operational Queries**
+
+##### `get_health_events(entity_id)`
+**Purpose**: Gets health events and problems for a service
+**Parameters**:
+- `entity_id` (string): Dynatrace entity ID
+
+**Queries Executed**:
+1. **Active Problems Query**:
+   ```json
+   {
+     "entitySelector": "type(PROCESS_GROUP_INSTANCE),tag({entity_id})",
+     "status": "OPEN"
+   }
+   ```
+
+2. **OOM Kills Query**:
+   ```json
+   {
+     "eventSelector": "eventType(KUBERNETES_EVENT),kubernetes.event.reason(OOMKill)",
+     "entitySelector": "type(PROCESS_GROUP_INSTANCE),tag({entity_id})",
+     "from": "now-7d"
+   }
+   ```
+
+**Response Structure**:
+```json
+{
+  "active_problem_count": 2,
+  "active_problems": [
+    {
+      "title": "High CPU usage detected",
+      "severity": "WARNING"
+    },
+    {
+      "title": "Memory pressure detected",
+      "severity": "ERROR"
+    }
+  ],
+  "recent_oom_kills": 1
+}
+```
+
+##### `get_service_level_objectives(entity_id)`
+**Purpose**: Gets the status of all SLOs related to a service
+**Parameters**:
+- `entity_id` (string): Dynatrace entity ID
+
+**Query Parameters**:
+```json
+{
+  "entitySelector": "type(PROCESS_GROUP_INSTANCE),tag({entity_id})",
+  "timeFrame": "now-1h"
+}
+```
+
+**Response Structure**:
+```json
+[
+  {
+    "name": "Response Time SLO",
+    "status": "SUCCESS",
+    "value": 98.5,
+    "errorBudgetRemaining": 85.2
+  },
+  {
+    "name": "Availability SLO",
+    "status": "WARNING",
+    "value": 95.2,
+    "errorBudgetRemaining": 45.8
+  }
+]
+```
+
+#### 5. **Comprehensive Context Queries**
+
+##### `get_scaling_context(entity_id)`
+**Purpose**: Builds comprehensive performance and health context for scaling decisions
+**Parameters**:
+- `entity_id` (string): Dynatrace entity ID
+
+**Combines Multiple Queries**:
+- Performance metrics (CPU, memory usage)
+- Health events (problems, OOM kills)
+- Service level objectives (SLO status)
+
+**Response Structure**:
+```json
+{
+  "performance_metrics": {
+    "cpu_usage_millicores_p90": 750,
+    "memory_usage_mb_p90": 512,
+    "pod_cpu_requests_millicores": 500,
+    "pod_memory_requests_mb": 1024
+  },
+  "health_events": {
+    "active_problem_count": 1,
+    "active_problems": [...],
+    "recent_oom_kills": 0
+  },
+  "service_level_objectives": [...]
+}
+```
+
+### Query Execution Flow
+
+```mermaid
+sequenceDiagram
+    participant AI as AI Engine
+    participant MCP as MCP Client
+    participant DT as Dynatrace API
+    participant Cache as Response Cache
+
+    AI->>MCP: check_data_availability(app_name, namespace)
+    MCP->>DT: Query entities with multiple selectors
+    DT->>MCP: Return entity list
+    MCP->>DT: Query historical metrics (7 days)
+    DT->>MCP: Return metrics data
+    MCP->>AI: Return data availability status
+
+    AI->>MCP: discover_entity(app_name, namespace)
+    MCP->>DT: Query entities with selector patterns
+    DT->>MCP: Return entity ID
+    MCP->>AI: Return entity ID
+
+    AI->>MCP: get_historical_metrics(entity_id, 7)
+    MCP->>DT: Query metrics with time range
+    DT->>MCP: Return historical data
+    MCP->>Cache: Cache response
+    MCP->>AI: Return processed metrics
+
+    AI->>MCP: get_trend_analysis(entity_id, 7)
+    MCP->>Cache: Check cached metrics
+    MCP->>AI: Return trend analysis
+
+    AI->>MCP: get_performance_metrics(entity_id)
+    MCP->>DT: Query current metrics
+    DT->>MCP: Return performance data
+    MCP->>AI: Return performance metrics
+
+    AI->>MCP: get_health_events(entity_id)
+    MCP->>DT: Query problems and events
+    DT->>MCP: Return health data
+    MCP->>AI: Return health events
+
+    AI->>MCP: get_service_level_objectives(entity_id)
+    MCP->>DT: Query SLO status
+    DT->>MCP: Return SLO data
+    MCP->>AI: Return SLO status
+```
+
+### Error Handling and Fallbacks
+
+#### Query Error Scenarios
+1. **Entity Not Found**: Returns `no_historical_data` status
+2. **API Timeout**: Retries with exponential backoff
+3. **Authentication Failure**: Logs error and returns empty results
+4. **Rate Limiting**: Implements request throttling
+5. **Network Issues**: Graceful degradation with cached data
+
+#### Fallback Strategies
+- **No Historical Data**: Use static fallback configurations
+- **Partial Data**: Combine available data with intelligent defaults
+- **API Unavailable**: Fall back to cached responses or static configs
+- **Invalid Entity**: Use namespace/environment-based defaults
+
+### Performance Optimizations
+
+#### Caching Strategy
+- **Response Caching**: Cache successful API responses for 5 minutes
+- **Entity Discovery**: Cache entity IDs for 1 hour
+- **Metrics Caching**: Cache historical metrics for 15 minutes
+- **Health Data**: Cache health events for 2 minutes
+
+#### Query Optimization
+- **Batch Queries**: Combine multiple metrics in single API calls
+- **Selective Fields**: Request only required metric fields
+- **Time Range Optimization**: Use appropriate time ranges for different queries
+- **Parallel Execution**: Execute independent queries concurrently
+
+### Security Considerations
+
+#### Authentication
+- **API Token**: Secure token-based authentication
+- **Token Rotation**: Support for automatic token refresh
+- **Least Privilege**: Minimal required API permissions
+
+#### Data Protection
+- **Encryption**: All data encrypted in transit (TLS)
+- **PII Handling**: No sensitive data in logs or responses
+- **Audit Logging**: Comprehensive query audit trail
+
+### Monitoring and Observability
+
+#### Query Metrics
+- **Success Rate**: Track successful vs failed queries
+- **Response Time**: Monitor query performance
+- **Cache Hit Rate**: Track cache effectiveness
+- **Error Rates**: Monitor different error types
+
+#### Alerting
+- **High Error Rate**: Alert when error rate exceeds threshold
+- **Slow Response Time**: Alert when queries are too slow
+- **Authentication Failures**: Alert on auth issues
+- **Rate Limiting**: Alert when hitting API limits
+
+This comprehensive MCP query documentation provides the foundation for understanding how the SRE Agent gathers intelligence from Dynatrace to make informed scaling decisions.

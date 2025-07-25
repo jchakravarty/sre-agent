@@ -185,181 +185,239 @@ def _generate_static_suggestion(deployment_context, repo_name, config):
         # Return unvalidated suggestion as fallback
         return {"hpa": hpa_suggestion, "karpenter": karpenter_suggestion}
 
+def _define_llm_tools():
+    """Define the tools available to the LLM for scaling analysis."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_performance_metrics",
+                "description": "Gets key performance metrics for a service.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity_id": {"type": "string", "description": "The ID of the service to query."}
+                    },
+                    "required": ["entity_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_health_events",
+                "description": "Gets health events (e.g., problems, OOM kills) for a service.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity_id": {"type": "string", "description": "The ID of the service to query."}
+                    },
+                    "required": ["entity_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_service_level_objectives",
+                "description": "Gets the status of all SLOs related to a service.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity_id": {"type": "string", "description": "The ID of the service to query."}
+                    },
+                    "required": ["entity_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "check_data_availability",
+                "description": "Check what historical data is available for an application.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "app_name": {"type": "string", "description": "The application name."},
+                        "namespace": {"type": "string", "description": "The Kubernetes namespace."}
+                    },
+                    "required": ["app_name", "namespace"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "discover_entity",
+                "description": "Discover the Dynatrace entity ID for an application.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "app_name": {"type": "string", "description": "The application name."},
+                        "namespace": {"type": "string", "description": "The Kubernetes namespace."}
+                    },
+                    "required": ["app_name", "namespace"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_historical_metrics",
+                "description": "Get historical metrics for trend analysis over specified days.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity_id": {"type": "string", "description": "The Dynatrace entity ID."},
+                        "days": {"type": "integer", "description": "Number of days to analyze (default: 7)", "default": 7}
+                    },
+                    "required": ["entity_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "get_trend_analysis",
+                "description": "Analyze metrics trends to infer traffic patterns and scaling needs.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "entity_id": {"type": "string", "description": "The Dynatrace entity ID."},
+                        "days": {"type": "integer", "description": "Number of days to analyze (default: 7)", "default": 7}
+                    },
+                    "required": ["entity_id"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "submit_scaling_suggestion",
+                "description": "Submits the final proposed scaling suggestion with rationale.",
+                "parameters": ScalingSuggestionContent.model_json_schema()
+            }
+        }
+    ]
+
+
+def _execute_tool_call(tool_call, mcp_client):
+    """Execute a single tool call and return the result."""
+    function_name = tool_call['function']['name']
+    function_args = json.loads(tool_call['function']['arguments'])
+    
+    # Handle the special case of submitting a scaling suggestion
+    if function_name == 'submit_scaling_suggestion':
+        validated_suggestion = ScalingSuggestionContent.model_validate(function_args)
+        return {
+            "suggestion": validated_suggestion.model_dump(by_alias=True),
+            "suggestion_source": "llm_validated"
+        }
+    
+    # Execute MCP client method
+    if hasattr(mcp_client, function_name):
+        function_to_call = getattr(mcp_client, function_name)
+        tool_output = function_to_call(**function_args)
+        return {
+            "tool_call_id": tool_call['id'],
+            "role": "tool",
+            "name": function_name,
+            "content": json.dumps(tool_output)
+        }
+    else:
+        return {
+            "tool_call_id": tool_call['id'],
+            "role": "tool",
+            "name": function_name,
+            "content": "Error: Tool not found."
+        }
+
+
+def _run_ai_suggestion_workflow(app_context, deployment_context, config):
+    """Run the AI-powered suggestion workflow."""
+    llm_client = _get_llm_client()
+    mcp_client = _get_mcp_client()
+    
+    # Prepare context
+    app_name = app_context.get('name')
+    namespace = deployment_context.get('environment', 'default')
+    target_entity = f"{app_name}:{namespace}"
+    
+    # Initialize conversation
+    tools = _define_llm_tools()
+    messages = [{"role": "user", "content": _build_initial_prompt(target_entity, app_name, namespace)}]
+    
+    # Execute conversation loop
+    max_iterations = 5
+    for iteration in range(max_iterations):
+        try:
+            # Get LLM response
+            llm_response = llm_client.call(messages, tools)
+            
+            # Check if LLM made tool calls
+            if not llm_response.get("tool_calls"):
+                break
+            
+            # Add assistant response to conversation history
+            messages.append(llm_response)
+            
+            # Execute tool calls
+            for tool_call in llm_response["tool_calls"]:
+                result = _execute_tool_call(tool_call, mcp_client)
+                
+                # Check if we got a final suggestion
+                if "suggestion" in result:
+                    return result
+                
+                # Add tool result to conversation history
+                messages.append(result)
+                
+        except Exception as e:
+            print(f"Error in AI workflow iteration {iteration}: {e}")
+            break
+    
+    # If we reach here, AI workflow didn't produce a valid suggestion
+    return None
+
+
 def get_suggestion(config, app_context, deployment_context):
     """
-    Generates a scaling suggestion, using an AI-first approach with a static fallback.
+    Generates a scaling suggestion using AI-first approach with static fallback.
+    
+    Args:
+        config: Configuration dictionary from AppConfig
+        app_context: Application context (name, namespace, etc.)
+        deployment_context: Deployment context (environment, etc.)
+    
+    Returns:
+        dict: Scaling suggestion with source information
     """
+    # Generate static fallback suggestion first
     static_suggestion = _generate_static_suggestion(
         deployment_context, app_context.get('name'), config
     )
-
+    
+    # Check if AI is enabled
     enable_ai = config.get('features', {}).get('enable_ai_shadow_analyst', False)
-    if enable_ai:
-        try:
-            llm_client = _get_llm_client()
-            mcp_client = _get_mcp_client()
-            target_entity = f"{app_context.get('name')}:{deployment_context.get('environment')}"
-            
-            # Define the tools available to the LLM
-            tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_performance_metrics",
-                        "description": "Gets key performance metrics for a service.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "entity_id": {"type": "string", "description": "The ID of the service to query."}
-                            },
-                            "required": ["entity_id"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_health_events",
-                        "description": "Gets health events (e.g., problems, OOM kills) for a service.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "entity_id": {"type": "string", "description": "The ID of the service to query."}
-                            },
-                            "required": ["entity_id"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_service_level_objectives",
-                        "description": "Gets the status of all SLOs related to a service.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "entity_id": {"type": "string", "description": "The ID of the service to query."}
-                            },
-                            "required": ["entity_id"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "check_data_availability",
-                        "description": "Check what historical data is available for an application.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "app_name": {"type": "string", "description": "The application name."},
-                                "namespace": {"type": "string", "description": "The Kubernetes namespace."}
-                            },
-                            "required": ["app_name", "namespace"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "discover_entity",
-                        "description": "Discover the Dynatrace entity ID for an application.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "app_name": {"type": "string", "description": "The application name."},
-                                "namespace": {"type": "string", "description": "The Kubernetes namespace."}
-                            },
-                            "required": ["app_name", "namespace"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_historical_metrics",
-                        "description": "Get historical metrics for trend analysis over specified days.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "entity_id": {"type": "string", "description": "The Dynatrace entity ID."},
-                                "days": {"type": "integer", "description": "Number of days to analyze (default: 7)", "default": 7}
-                            },
-                            "required": ["entity_id"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "get_trend_analysis",
-                        "description": "Analyze metrics trends to infer traffic patterns and scaling needs.",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {
-                                "entity_id": {"type": "string", "description": "The Dynatrace entity ID."},
-                                "days": {"type": "integer", "description": "Number of days to analyze (default: 7)", "default": 7}
-                            },
-                            "required": ["entity_id"]
-                        }
-                    }
-                },
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "submit_scaling_suggestion",
-                        "description": "Submits the final proposed scaling suggestion with rationale.",
-                        "parameters": ScalingSuggestionContent.model_json_schema()
-                    }
-                }
-            ]
-            
-            app_name = app_context.get('name')
-            namespace = deployment_context.get('environment', 'default')
-            messages = [{"role": "user", "content": _build_initial_prompt(target_entity, app_name, namespace)}]
-            
-            # Orchestration loop
-            for _ in range(5): # Limit the number of turns to prevent infinite loops
-                llm_response = llm_client.call(messages, tools)
-                
-                if llm_response.get("tool_calls"):
-                    tool_calls = llm_response["tool_calls"]
-                    messages.append(llm_response) # Add the assistant's response to the history
-                    
-                    for tool_call in tool_calls:
-                        function_name = tool_call['function']['name']
-                        function_args = json.loads(tool_call['function']['arguments'])
-                        
-                        if function_name == 'submit_scaling_suggestion':
-                            validated_suggestion = ScalingSuggestionContent.model_validate(function_args)
-                            return {
-                                "suggestion": validated_suggestion.model_dump(by_alias=True),
-                                "suggestion_source": "llm_validated"
-                            }
-                        
-                        # Dispatch to the appropriate MCP client method
-                        if hasattr(mcp_client, function_name):
-                            function_to_call = getattr(mcp_client, function_name)
-                            tool_output = function_to_call(**function_args)
-                            messages.append({
-                                "tool_call_id": tool_call['id'],
-                                "role": "tool",
-                                "name": function_name,
-                                "content": json.dumps(tool_output)
-                            })
-                        else:
-                             messages.append({
-                                "tool_call_id": tool_call['id'],
-                                "role": "tool",
-                                "name": function_name,
-                                "content": "Error: Tool not found."
-                            })
-                else:
-                    # If the LLM doesn't make a tool call, break the loop
-                    break
-                    
-        except Exception as e:
-            print(f"Error in LLM suggestion workflow: {e}")
-
+    if not enable_ai:
+        print("AI suggestion disabled, using static fallback.")
+        return {
+            'suggestion': static_suggestion, 
+            'suggestion_source': 'static'
+        }
+    
+    # Try AI-powered suggestion
+    try:
+        ai_result = _run_ai_suggestion_workflow(app_context, deployment_context, config)
+        if ai_result:
+            print("AI suggestion generated successfully.")
+            return ai_result
+    except Exception as e:
+        print(f"AI suggestion workflow failed: {e}")
+    
+    # Fall back to static suggestion
     print("Using static suggestion as fallback.")
-    return {'suggestion': static_suggestion, 'suggestion_source': 'static'}
+    return {
+        'suggestion': static_suggestion, 
+        'suggestion_source': 'static'
+    }

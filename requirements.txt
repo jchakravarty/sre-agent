@@ -2,3 +2,4 @@ requests
 pyyaml
 pydantic
 boto3
+flask

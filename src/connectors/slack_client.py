@@ -7,7 +7,8 @@ class SlackClient:
     """A client for interacting with the Slack API."""
 
     def __init__(self):
-        self.slack_webhook_url = secrets_manager.get_secret_value("SLACK_WEBHOOK_URL")
+        # Try to get from secrets manager first, then fall back to environment variables
+        self.slack_webhook_url = secrets_manager.get_secret_value("SLACK_WEBHOOK_URL") or os.environ.get("SLACK_WEBHOOK_URL")
         if not self.slack_webhook_url:
             raise ValueError("SLACK_WEBHOOK_URL not configured.")
 

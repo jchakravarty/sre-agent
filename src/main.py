@@ -30,7 +30,6 @@ def _get_weight(weights, key, default=0):
         return default
     return value
 
-@dynatrace_client.trace_function
 def _run_quality_checks(repo_name, commit_sha, artifact_id):
     """Runs all quality gate checks and returns the results."""
     sq_client = sonarqube_client.SonarQubeClient()

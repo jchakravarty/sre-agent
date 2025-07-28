@@ -133,6 +133,25 @@ class TestBasicIntegration:
             }
         }
         
+        # Create test event
+        event = {
+            'body': json.dumps({
+                'suggestion_type': 'kubernetes_scaling',
+                'application': {
+                    'name': 'test-app',
+                    'namespace': 'test-app-prod',
+                    'version': '1.0.0',
+                    'team': 'platform'
+                },
+                'deployment_context': {
+                    'environment': 'prod',
+                    'deployment_name': 'test-app',
+                    'architecture': 'amd64',
+                    'cluster_name': 'eks-prod'
+                }
+            })
+        }
+        
         # Mock the config loading
         with patch('src.main.load_config', return_value=test_config):
             with patch('src.main._check_data_availability', return_value=('no_historical_data', None)):
@@ -160,37 +179,21 @@ class TestBasicIntegration:
                             },
                             "suggestion_source": "static"
                         }
-                        # Create test event
-            event = {
-                'body': json.dumps({
-                    'suggestion_type': 'kubernetes_scaling',
-                    'application': {
-                        'name': 'test-app',
-                        'namespace': 'test-app-prod',
-                        'version': '1.0.0',
-                        'team': 'platform'
-                    },
-                    'deployment_context': {
-                        'environment': 'prod',
-                        'deployment_name': 'test-app',
-                        'architecture': 'amd64',
-                        'cluster_name': 'eks-prod'
-                    }
-                })
-            }
-            
-            # Execute the suggestion handler
-            response = suggestion_handler(event, {})
-            
-            # Verify response
-            assert response['statusCode'] == 200
-            response_body = json.loads(response['body'])
-            
-            # Verify static suggestion was used
-            assert response_body['suggestion_source'] in ['static', 'ai_powered_with_fallbacks']
-            assert response_body['suggestion']['hpa']['minReplicas'] == 2
-            assert response_body['suggestion']['hpa']['maxReplicas'] == 6  # Updated to match actual response
-            assert response_body['suggestion']['hpa']['targetCPUUtilizationPercentage'] == 70
+                        
+                        # Execute the suggestion handler
+                        response = suggestion_handler(event, {})
+                        
+                        # Verify response
+                        assert response['statusCode'] == 200
+                        response_body = json.loads(response['body'])
+                        
+                        # Verify static suggestion was used
+                        assert response_body['suggestion_source'] in ['static', 'ai_powered_with_fallbacks']
+                        assert 'suggestion' in response_body
+                        assert 'hpa' in response_body['suggestion']
+                        assert response_body['suggestion']['hpa']['minReplicas'] == 2
+                        assert response_body['suggestion']['hpa']['maxReplicas'] == 10  # Should match the mock response
+                        assert response_body['suggestion']['hpa']['targetCPUUtilizationPercentage'] == 70
 
     def test_dynatrace_mcp_integration(self):
         """Test integration with Dynatrace MCP server."""

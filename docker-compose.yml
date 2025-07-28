@@ -23,6 +23,11 @@ services:
       - OLLAMA_MODEL=codellama:13b
       - DYNATRACE_API_URL=http://wiremock:8080/dynatrace
       - DYNATRACE_API_TOKEN=test-token
+      - SONAR_API_URL=http://wiremock:8080/sonarqube
+      - SONAR_API_TOKEN=test-token
+      - WIZ_API_URL=http://wiremock:8080/wiz
+      - WIZ_API_TOKEN=test-token
+      - SLACK_WEBHOOK_URL=http://wiremock:8080/slack
       - MCP_CLIENT_TYPE=dynatrace
       - LLM_CLIENT_TYPE=ollama
       - DYNATRACE_MCP_SERVER_URL=http://dynatrace-mcp-server:3000
@@ -40,7 +45,8 @@ services:
         echo 'Starting development environment...' &&
         python -c 'import sys; print(f\"Python version: {sys.version}\")' &&
         python -c 'import src.main; print(\"Application modules loaded successfully\")' &&
-        tail -f /dev/null
+        echo 'Starting SRE Agent web server...' &&
+        python -m src.web_server
       "
 
   # Unit tests service
@@ -130,6 +136,11 @@ services:
       - AWS_SECRET_ACCESS_KEY=test
       - APP_ENV=test
       - TARGET_HOST=http://development:8000
+      # Add these environment variables for external services
+      - SONAR_API_URL=http://wiremock:8080/sonarqube
+      - SONAR_API_TOKEN=test-token
+      - WIZ_API_URL=http://wiremock:8080/wiz
+      - WIZ_API_TOKEN=test-token
     depends_on:
       - development
       - localstack
@@ -208,15 +219,9 @@ services:
       - wiremock
     command: >
       sh -c "
-        echo 'Setting up Dynatrace MCP Server...' &&
-        if [ ! -f package.json ]; then
-          echo 'Cloning dynatrace-mcp-server...' &&
-          apk add --no-cache git &&
-          git clone https://github.com/dynatrace/dynatrace-mcp-server.git /tmp/mcp-server &&
-          cp -r /tmp/mcp-server/* /app/ &&
-          npm install
-        fi &&
-        echo 'Starting Dynatrace MCP Server...' &&
+        echo 'Setting up Mock Dynatrace MCP Server...' &&
+        npm install &&
+        echo 'Starting Mock Dynatrace MCP Server...' &&
         npm start
       "
     healthcheck:
@@ -236,15 +241,17 @@ services:
     environment:
       - SERVICES=lambda,apigateway,s3,dynamodb,logs,appconfig,secretsmanager
       - DEBUG=1
-      - DATA_DIR=/tmp/localstack/data
-      - HOST_TMP_FOLDER=/tmp/localstack
-      - DOCKER_HOST=unix:///var/run/docker.sock
+      #- DATA_DIR=/tmp/localstack/data
+      #- HOST_TMP_FOLDER=/tmp/localstack
+      #- DOCKER_HOST=unix:///var/run/docker.sock
       - AWS_DEFAULT_REGION=us-east-1
       - AWS_ACCESS_KEY_ID=test
       - AWS_SECRET_ACCESS_KEY=test
-    volumes:
-      - "/tmp/localstack:/tmp/localstack"
-      - "/var/run/docker.sock:/var/run/docker.sock"
+      - PERSISTENCE=0  # Disable persistence for faster startup
+    #volumes:
+      #- "localstack_data:/tmp/localstack"
+      #- "/tmp/localstack:/tmp/localstack"
+      #- "/var/run/docker.sock:/var/run/docker.sock"
     networks:
       - sre-network
     healthcheck:
@@ -252,6 +259,8 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+      start_period: 60s  # Give more time to start
+    restart: unless-stopped  # Add restart policy
 
   # WireMock for external service mocking (Dynatrace, SonarQube, Wiz, Slack)
   wiremock:
@@ -378,6 +387,7 @@ networks:
 
 volumes:
   localstack_data:
+    driver: local
   test_reports:
   htmlcov:
   ollama_data:

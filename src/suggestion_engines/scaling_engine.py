@@ -1,11 +1,15 @@
 """This module contains the logic for the scaling suggestion engine."""
 import os
 import json
+import sys
+from typing import Dict, Any, Optional
 from ..llm_client import OllamaClient, BringYourOwnLLMClient
 from ..mcp_client import DynatraceMCPClient, MockMCPClient
-from ..data_models import ScalingSuggestion, ScalingSuggestionContent
+from ..data_models import ScalingSuggestionContent
 
-# --- Client Factories ---
+# Import the tools utility using absolute import
+from ..utils.llm_tools import create_scaling_tools_manager
+
 
 def _get_mcp_client():
     """Factory to get the configured MCP client."""
@@ -47,12 +51,7 @@ Available tools:
 
 Strategy:
 1. Start by checking data availability for {app_name} in {namespace}
-2. If data exists, discover the entity ID and gather historical metrics
-3. Analyze trends to understand traffic patterns (steady, peak hours, growth, etc.)
-4. Get current performance and health data
-5. Based on all information, generate an optimal scaling configuration with detailed rationale
-
-Always include a comprehensive rationale explaining your reasoning based on the data you gathered.
+2. If data exists, discover the entity ID and gather historical
 """
 
 def _generate_static_suggestion(deployment_context, repo_name, config):
@@ -127,211 +126,61 @@ def _generate_static_suggestion(deployment_context, repo_name, config):
     env_override = environment_defaults.get(env_name, {})
     if env_override:
         if 'resource_sizing' in env_override:
-            final_config.setdefault('resource_sizing', {}).update(env_override['resource_sizing'])
+            final_config['resource_sizing'] = {
+                **final_config.get('resource_sizing', {}),
+                **env_override['resource_sizing']
+            }
         if 'scaling_configuration' in env_override:
-            final_config.setdefault('scaling_configuration', {}).update(env_override['scaling_configuration'])
-        if 'infrastructure' in env_override:
-            final_config.setdefault('infrastructure', {}).update(env_override['infrastructure'])
+            final_config['scaling_configuration'] = {
+                **final_config.get('scaling_configuration', {}),
+                **env_override['scaling_configuration']
+            }
     
     # Layer 3: Application type patterns
-    app_type_config = app_type_patterns.get(application_type, {})
-    if app_type_config:
-        if 'scaling_configuration' in app_type_config:
-            final_config.setdefault('scaling_configuration', {}).update(app_type_config['scaling_configuration'])
-        if 'resource_sizing' in app_type_config:
-            final_config.setdefault('resource_sizing', {}).update(app_type_config['resource_sizing'])
+    app_pattern = app_type_patterns.get(application_type, {})
+    if app_pattern:
+        if 'resource_sizing' in app_pattern:
+            final_config['resource_sizing'] = {
+                **final_config.get('resource_sizing', {}),
+                **app_pattern['resource_sizing']
+            }
+        if 'scaling_configuration' in app_pattern:
+            final_config['scaling_configuration'] = {
+                **final_config.get('scaling_configuration', {}),
+                **app_pattern['scaling_configuration']
+            }
     
-    # Layer 4: Organization cost policies
+    # Layer 4: Cost optimization policies
     cost_policy = org_policies.get('cost_optimization', {}).get(cost_optimization, {})
     if cost_policy:
-        # Apply cost policy to infrastructure
-        infrastructure = final_config.setdefault('infrastructure', {})
-        if 'capacity_type' in cost_policy:
-            infrastructure['capacity_type'] = cost_policy['capacity_type']
-        if 'target_cpu' in cost_policy:
-            final_config.setdefault('scaling_configuration', {})['target_cpu'] = cost_policy['target_cpu']
+        if 'resource_sizing' in cost_policy:
+            final_config['resource_sizing'] = {
+                **final_config.get('resource_sizing', {}),
+                **cost_policy['resource_sizing']
+            }
+        if 'scaling_configuration' in cost_policy:
+            final_config['scaling_configuration'] = {
+                **final_config.get('scaling_configuration', {}),
+                **cost_policy['scaling_configuration']
+            }
     
-    # Build the final suggestion in the expected format
-    resource_sizing = final_config.get('resource_sizing', {})
-    scaling_config = final_config.get('scaling_configuration', {})
-    infrastructure = final_config.get('infrastructure', {})
+    # Convert to the expected format
+    hpa_config = final_config.get('scaling_configuration', {}).get('hpa', {})
+    karpenter_config = final_config.get('scaling_configuration', {}).get('karpenter', {})
     
     hpa_suggestion = {
-        "minReplicas": scaling_config.get('min_replicas', 2),
-        "maxReplicas": scaling_config.get('max_replicas', 6),
-        "targetCPUUtilizationPercentage": scaling_config.get('target_cpu', 70),
-        "scaleTargetRefName": deployment_context.get('deployment_name'),
-        "resources": {
-            "cpuLimit": resource_sizing.get('cpu_limit', "500m"),
-            "memoryLimit": resource_sizing.get('memory_limit', "512Mi"),
-            "cpuRequest": resource_sizing.get('cpu_request', "250m"),
-            "memoryRequest": resource_sizing.get('memory_request', "256Mi")
-        }
+        "minReplicas": hpa_config.get('min_replicas', 1),
+        "maxReplicas": hpa_config.get('max_replicas', 3),
+        "targetCPUUtilizationPercentage": hpa_config.get('cpu_utilization_target', 70),
+        "scaleTargetRefName": deployment_context.get('deployment_name', repo_name)
     }
     
     karpenter_suggestion = {
-        "kubernetes.io/arch": infrastructure.get('arch', deployment_context.get('architecture', 'amd64')),
-        "karpenter.sh/capacity-type": infrastructure.get('capacity_type', 'spot')
+        "kubernetes.io/arch": karpenter_config.get('architecture', 'amd64'),
+        "karpenter.sh/capacity-type": karpenter_config.get('capacity_type', 'on-demand')
     }
-
-    # Validate the suggestion using Pydantic models for consistency
-    try:
-        suggestion_data = {"hpa": hpa_suggestion, "karpenter": karpenter_suggestion}
-        validated_suggestion = ScalingSuggestion.model_validate(suggestion_data)
-        return {"hpa": validated_suggestion.hpa.model_dump(by_alias=True), 
-                "karpenter": validated_suggestion.karpenter.model_dump(by_alias=True)}
-    except Exception as e:
-        print(f"Warning: Static suggestion validation failed: {e}")
-        # Return unvalidated suggestion as fallback
-        return {"hpa": hpa_suggestion, "karpenter": karpenter_suggestion}
-
-def _define_llm_tools():
-    """Define the tools available to the LLM for scaling analysis."""
-    return [
-        {
-            "type": "function",
-            "function": {
-                "name": "get_performance_metrics",
-                "description": "Gets key performance metrics for a service.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "entity_id": {"type": "string", "description": "The ID of the service to query."}
-                    },
-                    "required": ["entity_id"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_health_events",
-                "description": "Gets health events (e.g., problems, OOM kills) for a service.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "entity_id": {"type": "string", "description": "The ID of the service to query."}
-                    },
-                    "required": ["entity_id"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_service_level_objectives",
-                "description": "Gets the status of all SLOs related to a service.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "entity_id": {"type": "string", "description": "The ID of the service to query."}
-                    },
-                    "required": ["entity_id"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "check_data_availability",
-                "description": "Check what historical data is available for an application.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "app_name": {"type": "string", "description": "The application name."},
-                        "namespace": {"type": "string", "description": "The Kubernetes namespace."}
-                    },
-                    "required": ["app_name", "namespace"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "discover_entity",
-                "description": "Discover the Dynatrace entity ID for an application.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "app_name": {"type": "string", "description": "The application name."},
-                        "namespace": {"type": "string", "description": "The Kubernetes namespace."}
-                    },
-                    "required": ["app_name", "namespace"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_historical_metrics",
-                "description": "Get historical metrics for trend analysis over specified days.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "entity_id": {"type": "string", "description": "The Dynatrace entity ID."},
-                        "days": {"type": "integer", "description": "Number of days to analyze (default: 7)", "default": 7}
-                    },
-                    "required": ["entity_id"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_trend_analysis",
-                "description": "Analyze metrics trends to infer traffic patterns and scaling needs.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "entity_id": {"type": "string", "description": "The Dynatrace entity ID."},
-                        "days": {"type": "integer", "description": "Number of days to analyze (default: 7)", "default": 7}
-                    },
-                    "required": ["entity_id"]
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "submit_scaling_suggestion",
-                "description": "Submits the final proposed scaling suggestion with rationale.",
-                "parameters": ScalingSuggestionContent.model_json_schema()
-            }
-        }
-    ]
-
-
-def _execute_tool_call(tool_call, mcp_client):
-    """Execute a single tool call and return the result."""
-    function_name = tool_call['function']['name']
-    function_args = json.loads(tool_call['function']['arguments'])
     
-    # Handle the special case of submitting a scaling suggestion
-    if function_name == 'submit_scaling_suggestion':
-        validated_suggestion = ScalingSuggestionContent.model_validate(function_args)
-        return {
-            "suggestion": validated_suggestion.model_dump(by_alias=True),
-            "suggestion_source": "llm_validated"
-        }
-    
-    # Execute MCP client method
-    if hasattr(mcp_client, function_name):
-        function_to_call = getattr(mcp_client, function_name)
-        tool_output = function_to_call(**function_args)
-        return {
-            "tool_call_id": tool_call['id'],
-            "role": "tool",
-            "name": function_name,
-            "content": json.dumps(tool_output)
-        }
-    else:
-        return {
-            "tool_call_id": tool_call['id'],
-            "role": "tool",
-            "name": function_name,
-            "content": "Error: Tool not found."
-        }
-
+    return {"hpa": hpa_suggestion, "karpenter": karpenter_suggestion}
 
 def _run_ai_suggestion_workflow(app_context, deployment_context, config):
     """Run the AI-powered suggestion workflow."""
@@ -343,8 +192,14 @@ def _run_ai_suggestion_workflow(app_context, deployment_context, config):
     namespace = deployment_context.get('environment', 'default')
     target_entity = f"{app_name}:{namespace}"
     
+    # Create tools manager with validation schema
+    tools_manager = create_scaling_tools_manager(
+        mcp_client, 
+        ScalingSuggestionContent.model_json_schema()
+    )
+    
     # Initialize conversation
-    tools = _define_llm_tools()
+    tools = tools_manager.get_tools_for_llm()
     messages = [{"role": "user", "content": _build_initial_prompt(target_entity, app_name, namespace)}]
     
     # Execute conversation loop
@@ -363,22 +218,40 @@ def _run_ai_suggestion_workflow(app_context, deployment_context, config):
             
             # Execute tool calls
             for tool_call in llm_response["tool_calls"]:
-                result = _execute_tool_call(tool_call, mcp_client)
+                function_name = tool_call['function']['name']
+                function_args = json.loads(tool_call['function']['arguments'])
                 
-                # Check if we got a final suggestion
-                if "suggestion" in result:
-                    return result
-                
-                # Add tool result to conversation history
-                messages.append(result)
-                
+                # Execute tool using tools manager
+                try:
+                    tool_result = tools_manager.execute_tool(function_name, **function_args)
+                    
+                    # Check if we got a final suggestion
+                    if isinstance(tool_result, dict) and "suggestion" in tool_result:
+                        return tool_result
+                    
+                    # Add tool result to conversation history
+                    messages.append({
+                                "tool_call_id": tool_call['id'],
+                                "role": "tool",
+                                "name": function_name,
+                        "content": json.dumps(tool_result)
+                            })
+                    
+                except Exception as e:
+                    print(f"Error executing tool {function_name}: {e}")
+                    messages.append({
+                                "tool_call_id": tool_call['id'],
+                                "role": "tool",
+                                "name": function_name,
+                        "content": f"Error: {str(e)}"
+                            })
+                    
         except Exception as e:
             print(f"Error in AI workflow iteration {iteration}: {e}")
             break
     
     # If we reach here, AI workflow didn't produce a valid suggestion
     return None
-
 
 def get_suggestion(config, app_context, deployment_context):
     """

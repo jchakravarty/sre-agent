@@ -7,8 +7,9 @@ class WizClient:
     """A client for interacting with the Wiz API."""
 
     def __init__(self):
-        self.wiz_api_token = secrets_manager.get_secret_value("WIZ_API_TOKEN")
-        self.wiz_api_url = secrets_manager.get_secret_value("WIZ_API_URL")
+        # Try to get from secrets manager first, then fall back to environment variables
+        self.wiz_api_token = secrets_manager.get_secret_value("WIZ_API_TOKEN") or os.environ.get("WIZ_API_TOKEN")
+        self.wiz_api_url = secrets_manager.get_secret_value("WIZ_API_URL") or os.environ.get("WIZ_API_URL")
         if not all([self.wiz_api_token, self.wiz_api_url]):
             raise ValueError("Wiz API URL or Token not configured.")
 

@@ -1,0 +1,31 @@
+{
+  "request": {
+    "method": "GET",
+    "urlPath": "/dynatrace/api/v2/metrics/query",
+    "headers": {
+      "Authorization": {
+        "matches": "Api-Token.*"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "result": [
+        {
+          "metricId": "builtin:host.cpu.usage",
+          "data": [
+            {
+              "dimensions": ["host-1"],
+              "values": [75.5],
+              "timestamps": [1640995200000]
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

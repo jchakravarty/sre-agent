@@ -1,4 +1,5 @@
 """This module contains the functions to interact with the Dynatrace API."""
+import os
 import time
 from functools import wraps
 import requests
@@ -9,8 +10,9 @@ class DynatraceClient:
     """A client for interacting with the Dynatrace API."""
 
     def __init__(self):
-        self.dynatrace_api_url = secrets_manager.get_secret_value("DYNATRACE_API_URL")
-        self.dynatrace_api_token = secrets_manager.get_secret_value("DYNATRACE_API_TOKEN")
+        # Try to get from secrets manager first, then fall back to environment variables
+        self.dynatrace_api_url = secrets_manager.get_secret_value("DYNATRACE_API_URL") or os.environ.get("DYNATRACE_API_URL")
+        self.dynatrace_api_token = secrets_manager.get_secret_value("DYNATRACE_API_TOKEN") or os.environ.get("DYNATRACE_API_TOKEN")
         if not all([self.dynatrace_api_url, self.dynatrace_api_token]):
             raise ValueError("Dynatrace API URL or Token not configured.")
 

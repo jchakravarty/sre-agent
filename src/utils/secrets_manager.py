@@ -50,3 +50,12 @@ def get_secret_value(key, default=None):
 
     secrets = get_secret(secret_name)
     return secrets.get(key, default)
+
+class SecretsManager:
+    @staticmethod
+    def get_secret(secret_name):
+        return get_secret(secret_name)
+
+    @staticmethod
+    def get_secret_value(key, default=None):
+        return get_secret_value(key, default)

@@ -1,0 +1,24 @@
+{
+  "request": {
+    "method": "POST",
+    "urlPath": "/dynatrace/api/v2/events",
+    "headers": {
+      "Authorization": {
+        "matches": "Api-Token.*"
+      },
+      "Content-Type": {
+        "equalTo": "application/json"
+      }
+    }
+  },
+  "response": {
+    "status": 200,
+    "headers": {
+      "Content-Type": "application/json"
+    },
+    "jsonBody": {
+      "eventId": "test-event-id-12345",
+      "status": "SUCCESS"
+    }
+  }
+}

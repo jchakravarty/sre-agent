@@ -1,4 +1,5 @@
 """This module contains the functions to interact with the SonarQube API."""
+import os
 import requests
 from src.utils import secrets_manager
 
@@ -6,8 +7,9 @@ class SonarQubeClient:
     """A client for interacting with the SonarQube API."""
 
     def __init__(self):
-        self.sonar_api_url = secrets_manager.get_secret_value("SONAR_API_URL")
-        self.sonar_api_token = secrets_manager.get_secret_value("SONAR_API_TOKEN")
+        # Try to get from secrets manager first, then fall back to environment variables
+        self.sonar_api_url = secrets_manager.get_secret_value("SONAR_API_URL") or os.environ.get("SONAR_API_URL")
+        self.sonar_api_token = secrets_manager.get_secret_value("SONAR_API_TOKEN") or os.environ.get("SONAR_API_TOKEN")
         if not all([self.sonar_api_url, self.sonar_api_token]):
             raise ValueError("SonarQube URL or Token not configured.")
 
